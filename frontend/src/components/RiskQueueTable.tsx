@@ -6,17 +6,33 @@ import { PatientQueueItem } from "@/data/mockPatients";
 interface RiskQueueTableProps {
   patients: PatientQueueItem[];
   onSelectPatient?: (patient: PatientQueueItem) => void;
+  onAcknowledgeAlert?: (alertId: string, patientId: string) => Promise<void>;
 }
 
 export default function RiskQueueTable({
   patients: initialPatients,
   onSelectPatient,
+  onAcknowledgeAlert,
 }: RiskQueueTableProps) {
   const [patients, setPatients] = useState<PatientQueueItem[]>(initialPatients);
   const [actionLoading, setActionLoading] = useState<{ [key: string]: boolean }>({});
 
-  const handleActionClick = (patientId: string, actionType: string) => {
+  React.useEffect(() => {
+    setPatients(initialPatients);
+  }, [initialPatients]);
+
+  const handleActionClick = async (patientId: string, actionType: string) => {
     setActionLoading((prev) => ({ ...prev, [patientId]: true }));
+
+    const targetPatient = patients.find((p) => p.id === patientId);
+
+    if (targetPatient?.alert_id && onAcknowledgeAlert && (actionType === "acknowledge" || actionType === "call")) {
+      try {
+        await onAcknowledgeAlert(targetPatient.alert_id, patientId);
+      } catch (err) {
+        console.error("Failed to acknowledge alert:", err);
+      }
+    }
 
     setTimeout(() => {
       setActionLoading((prev) => ({ ...prev, [patientId]: false }));
@@ -40,7 +56,7 @@ export default function RiskQueueTable({
               return {
                 ...item,
                 acknowledged: true,
-                acknowledged_text: "Ack by Nurse Sarah J. (Just now)",
+                acknowledged_text: "Ack by Nurse Sarah Jenkins (Just now)",
                 action_type: "none",
               };
             }
@@ -48,7 +64,7 @@ export default function RiskQueueTable({
           return item;
         })
       );
-    }, 600);
+    }, 400);
   };
 
   return (

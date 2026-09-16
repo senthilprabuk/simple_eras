@@ -1,6 +1,16 @@
 import React from "react";
+import { KpiResponse } from "@/lib/api";
 
-export default function KpiMetrics() {
+interface KpiMetricsProps {
+  kpis?: KpiResponse | null;
+}
+
+export default function KpiMetrics({ kpis }: KpiMetricsProps) {
+  const activePatients = kpis ? kpis.active_patients : 13;
+  const openAlerts = kpis ? kpis.open_alerts : 7;
+  const ackRate = kpis ? `${kpis.ack_rate_15min.toFixed(1)}%` : "94.2%";
+  const missedCheckins = kpis ? kpis.missed_checkins_today : 1;
+
   return (
     <section aria-label="Key Performance Indicators" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-gutter">
       {/* KPI Card 1: Active Patients */}
@@ -13,7 +23,7 @@ export default function KpiMetrics() {
         </div>
         <div className="flex items-baseline gap-space-xs my-1">
           <span className="font-metric-tabular text-metric-tabular text-on-surface font-bold tracking-tight">
-            142
+            {activePatients}
           </span>
           <span className="font-label-sm text-label-sm text-primary font-medium">
             100% capacity
@@ -37,7 +47,7 @@ export default function KpiMetrics() {
         </div>
         <div className="flex items-baseline gap-space-xs my-1">
           <span className="font-metric-tabular text-metric-tabular text-error font-bold tracking-tight">
-            7
+            {openAlerts}
           </span>
           <span className="font-label-sm text-label-sm text-error font-medium">
             Escalated review items
@@ -58,10 +68,10 @@ export default function KpiMetrics() {
         </div>
         <div className="flex items-baseline gap-space-xs my-1">
           <span className="font-metric-tabular text-metric-tabular text-primary font-bold tracking-tight">
-            94.2%
+            {ackRate}
           </span>
           <span className="font-label-sm text-label-sm text-primary font-medium">
-            +1.8% vs last wk
+            Rolling 7d compliance
           </span>
         </div>
         <p className="font-body-sm text-body-sm text-on-surface-variant">
@@ -79,7 +89,7 @@ export default function KpiMetrics() {
         </div>
         <div className="flex items-baseline gap-space-xs my-1">
           <span className="font-metric-tabular text-metric-tabular text-tertiary font-bold tracking-tight">
-            4
+            {missedCheckins}
           </span>
           <span className="font-label-sm text-label-sm text-tertiary font-medium">
             Overdue cadence

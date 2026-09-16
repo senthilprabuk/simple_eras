@@ -5,6 +5,8 @@ import React from "react";
 interface QueueControlsProps {
   currentPod: string;
   onSelectPod: (pod: string) => void;
+  currentTier?: string;
+  onSelectTier?: (tier: string) => void;
   counts: {
     emergency: number;
     critical: number;
@@ -16,8 +18,12 @@ interface QueueControlsProps {
 export default function QueueControls({
   currentPod,
   onSelectPod,
+  currentTier = "all",
+  onSelectTier,
   counts,
 }: QueueControlsProps) {
+  const totalAlerts = counts.emergency + counts.critical + counts.review + counts.missed;
+
   return (
     <section className="flex flex-col md:flex-row md:items-center justify-between gap-space-md">
       <div className="flex flex-wrap items-center gap-space-sm">
@@ -31,34 +37,79 @@ export default function QueueControls({
         </div>
       </div>
 
-      {/* Cohort Severity Distribution Status Badges & Pod Filters */}
+      {/* Cohort Severity Distribution Interactive Badges & Pod Filters */}
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex items-center bg-surface-container-lowest border border-outline-variant/30 rounded px-2.5 py-1 text-on-surface-variant font-label-sm text-label-sm">
-          <span className="text-error font-semibold mr-1.5">{counts.emergency}</span> Emergency
-          <span className="mx-2 text-outline-variant">·</span>
-          <span className="text-error font-semibold mr-1.5">{counts.critical}</span> Critical
-          <span className="mx-2 text-outline-variant">·</span>
-          <span className="text-tertiary font-semibold mr-1.5">{counts.review}</span> Review
-          <span className="mx-2 text-outline-variant">·</span>
-          <span className="text-on-surface-variant font-semibold mr-1.5">{counts.missed}</span> Missed
+        <div className="flex items-center bg-surface-container-lowest border border-outline-variant/30 rounded p-0.5 text-on-surface-variant font-label-sm text-label-sm">
+          <button
+            type="button"
+            onClick={() => onSelectTier?.("all")}
+            className={`px-2 py-0.5 rounded cursor-pointer transition-colors ${
+              currentTier === "all" ? "bg-surface-container-low font-semibold text-primary" : "hover:text-on-surface"
+            }`}
+          >
+            All ({totalAlerts})
+          </button>
+          <span className="mx-1 text-outline-variant/60">·</span>
+          <button
+            type="button"
+            onClick={() => onSelectTier?.(currentTier === "emergency" ? "all" : "emergency")}
+            className={`px-2 py-0.5 rounded cursor-pointer transition-colors ${
+              currentTier === "emergency" ? "bg-error text-white font-semibold" : "hover:text-error"
+            }`}
+          >
+            <span className={currentTier === "emergency" ? "text-white" : "text-error font-semibold"}>
+              {counts.emergency}
+            </span>{" "}
+            Emergency
+          </button>
+          <span className="mx-1 text-outline-variant/60">·</span>
+          <button
+            type="button"
+            onClick={() => onSelectTier?.(currentTier === "critical" ? "all" : "critical")}
+            className={`px-2 py-0.5 rounded cursor-pointer transition-colors ${
+              currentTier === "critical" ? "bg-error/15 border border-error text-error font-semibold" : "hover:text-error"
+            }`}
+          >
+            <span className="text-error font-semibold">{counts.critical}</span> Critical
+          </button>
+          <span className="mx-1 text-outline-variant/60">·</span>
+          <button
+            type="button"
+            onClick={() => onSelectTier?.(currentTier === "review" ? "all" : "review")}
+            className={`px-2 py-0.5 rounded cursor-pointer transition-colors ${
+              currentTier === "review" ? "bg-tertiary-fixed text-on-tertiary-fixed font-semibold" : "hover:text-tertiary"
+            }`}
+          >
+            <span className="text-tertiary font-semibold">{counts.review}</span> Review
+          </button>
+          <span className="mx-1 text-outline-variant/60">·</span>
+          <button
+            type="button"
+            onClick={() => onSelectTier?.(currentTier === "missed" ? "all" : "missed")}
+            className={`px-2 py-0.5 rounded cursor-pointer transition-colors ${
+              currentTier === "missed" ? "bg-surface-bright border border-outline-variant text-on-surface font-semibold" : "hover:text-on-surface"
+            }`}
+          >
+            <span className="text-on-surface-variant font-semibold">{counts.missed}</span> Missed
+          </button>
         </div>
 
         <div className="inline-flex items-center rounded border border-outline-variant/30 bg-surface-container-lowest p-0.5">
           <button
             type="button"
             onClick={() => onSelectPod("all")}
-            className={`px-3 py-1 rounded font-label-sm text-label-sm transition-colors ${
+            className={`px-3 py-1 rounded font-label-sm text-label-sm cursor-pointer transition-colors ${
               currentPod === "all"
                 ? "bg-surface-container-low text-primary font-semibold"
                 : "text-on-surface-variant hover:text-on-surface"
             }`}
           >
-            All Tiers ({counts.emergency + counts.critical + counts.review + counts.missed})
+            All Pods
           </button>
           <button
             type="button"
             onClick={() => onSelectPod("poda")}
-            className={`px-3 py-1 rounded font-label-sm text-label-sm transition-colors ${
+            className={`px-3 py-1 rounded font-label-sm text-label-sm cursor-pointer transition-colors ${
               currentPod === "poda"
                 ? "bg-surface-container-low text-primary font-semibold"
                 : "text-on-surface-variant hover:text-on-surface"
@@ -69,7 +120,7 @@ export default function QueueControls({
           <button
             type="button"
             onClick={() => onSelectPod("podb")}
-            className={`px-3 py-1 rounded font-label-sm text-label-sm transition-colors ${
+            className={`px-3 py-1 rounded font-label-sm text-label-sm cursor-pointer transition-colors ${
               currentPod === "podb"
                 ? "bg-surface-container-low text-primary font-semibold"
                 : "text-on-surface-variant hover:text-on-surface"

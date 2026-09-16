@@ -2,7 +2,12 @@
 
 import React, { useState } from "react";
 
-export default function TopHeader() {
+interface TopHeaderProps {
+  searchQuery?: string;
+  onSearchChange?: (query: string) => void;
+}
+
+export default function TopHeader({ searchQuery = "", onSearchChange }: TopHeaderProps) {
   const [protocolTriggered, setProtocolTriggered] = useState(false);
 
   return (
@@ -29,6 +34,8 @@ export default function TopHeader() {
             className="w-64 pl-8 pr-12 py-1.5 bg-surface-container-lowest border border-outline-variant/40 rounded font-body-sm text-body-sm text-on-surface placeholder:text-outline focus:outline-none focus:border-primary"
             placeholder="Search patient name or MRN..."
             type="text"
+            value={searchQuery}
+            onChange={(e) => onSearchChange?.(e.target.value)}
           />
           <kbd className="absolute right-2 px-1.5 py-0.5 border border-outline-variant/40 rounded font-label-sm text-[10px] text-outline bg-surface-bright">
             ⌘K
