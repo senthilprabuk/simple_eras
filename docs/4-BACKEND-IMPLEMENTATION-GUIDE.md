@@ -194,72 +194,87 @@ ORDER BY
 | **Step 8** | **Comprehensive Demo Seed Script** | **DONE** | `seed/seed_demo.py`<br>`backend/verify_step8.py` (Seeded 3 admins + 7 alerts over 13 patients) |
 | **Step 9** | **Automated Test Suite** | **DONE** | `tests/conftest.py`<br>`tests/test_auth.py`<br>`tests/test_dashboard.py`<br>`tests/test_alerts.py`<br>`tests/test_escalation.py` (16/16 tests passing) |
 | **Step 10** | **Next.js Frontend Integration** | **DONE** | `frontend/src/lib/api.ts`<br>`frontend/src/app/page.tsx`<br>`backend/verify_step10.py` (Live Neon PostgreSQL & CORS) |
+| **Step 11** | **Code Review Remediation** | **DONE** | Clinician sign-in, resolve endpoint, episode summary, row-level security (`db/schema/04_security.sql`), tracked migrations (`db/migrate.py`), isolated test database (`backend/tests/conftest.py`) |
+
+The per-step `verify_step*.py` scripts were superseded by the pytest suite in `backend/tests/` and have been removed, and `db/run_migration.py` was replaced by `db/migrate.py`. See section 6.
 
 ---
 
 ## 6. How to Run, Test and Verify the Backend
 
 ### 6.1 Environment Setup
-1. Ensure Python 3.10+ is installed.
-2. Ensure `backend/.env` exists and contains:
-   ```env
-   DATABASE_URL=postgresql://neondb_owner:<password>@<neon-pooler-host>/simpleeras?sslmode=require&channel_binding=require
-   JWT_SECRET_KEY=<random-32-byte-hex>
-   JWT_ALGORITHM=HS256
-   ACCESS_TOKEN_EXPIRE_MINUTES=720
-   CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
-   DEFAULT_ACK_WINDOW_SECS=900
-   ESCALATION_SWEEP_INTERVAL_SECS=60
+1. Ensure Python 3.10+ and Node.js 20+ are installed.
+2. Copy `backend/.env.example` to `backend/.env` and fill it in. The API refuses to start
+   without a real `JWT_SECRET_KEY` (32+ characters, not the example placeholder):
+   ```bash
+   python -c "import secrets; print(secrets.token_hex(32))"
    ```
+3. `NOTIFICATION_PROVIDER` defaults to `disabled`: overdue alerts are escalated and their
+   notifications queued, but nothing is sent, and the dashboard says so. Set it to `log` in
+   development to write each notification to the application log instead.
+4. Optionally copy `frontend/.env.example` to `frontend/.env.local` to point the dashboard at
+   a backend other than `http://localhost:8000`.
 
-### 6.2 Running Migrations
-To apply the database schema changes:
+### 6.2 Database
+
+**A new database** is built from the baseline, which already contains every migration:
 ```bash
-python db/run_migration.py
+psql "$DATABASE_URL" -f db/schema/01_meta.sql
+psql "$DATABASE_URL" -f db/schema/02_txn.sql
+psql "$DATABASE_URL" -f db/schema/03_views.sql
+psql "$DATABASE_URL" -f db/schema/04_security.sql
+psql "$DATABASE_URL" -f db/seed/01_reference.sql
+psql "$DATABASE_URL" -f db/seed/02_fixtures.sql     # optional: 12 synthetic patients
+python backend/seed/seed_demo.py                    # optional: demo clinicians and alerts
 ```
 
-### 6.3 Executing Completed Verification Suites
-You can run any of the step verification scripts at any time:
+**An existing database** is upgraded with the migration runner, which records every applied
+version in `meta.schema_migration` and never runs one twice:
 ```bash
-# Step 2: Test imports, bcrypt, JWT roundtripping
-python backend/verify_step2.py
-
-# Step 3: Test Neon asyncpg connection and statement caching flags
-python backend/verify_step3.py
-
-# Step 4: Test all 16 SQLAlchemy 2.0 ORM models against live database
-python backend/verify_step4.py
-
-# Step 5: Test Pydantic v2 schemas and validation rules
-python backend/verify_step5.py
-
-# Step 6: Test API endpoints with mocked auth/db
-python backend/verify_step6.py
-
-# Step 7: Test escalation background sweep logic
-python backend/verify_step7.py
-
-# Step 8: Seed demo data and verify full end-to-end integration
-python backend/seed/seed_demo.py
-python backend/verify_step8.py
-
-# Step 9: Run complete automated test suite (16 tests)
-pytest -v
-
-# Step 10: Verify Next.js frontend integration & CORS headers
-python backend/verify_step10.py
+python db/migrate.py --status
+python db/migrate.py
 ```
+A database created before migration tracking existed has no record of what already ran, so
+the runner refuses to guess. Record what it already has once, then migrate:
+```bash
+python db/migrate.py --baseline 002
+python db/migrate.py
+```
+
+The fixtures are anchored to today, so they drift one day at a time. Re-run
+`db/seed/02_fixtures.sql` and then `backend/seed/seed_demo.py` to reset them to day 21.
+
+### 6.3 Tests
+```bash
+cd backend && python -m pytest        # 55 tests
+cd frontend && npm test               # unit tests (vitest)
+cd frontend && npm run lint && npx tsc --noEmit
+```
+The backend suite creates a throwaway database from `db/schema/` and `db/seed/`, runs against
+it, and drops it afterwards, so it never touches the database in `.env`. The connecting role
+therefore needs `CREATEDB`, which `neondb_owner` has on Neon.
 
 ### 6.4 Starting the Servers
 * **Backend API** (FastAPI):
   ```bash
   cd backend
-  uvicorn app.main:app --reload --port 8000
+  uvicorn app.main:app --port 8000
   ```
-  API Documentation will be available at: `http://localhost:8000/docs`
-* **Frontend Application** (Next.js):
+  API documentation: `http://localhost:8000/docs`. Run a single worker, or several: the
+  escalation sweep takes a database advisory lock, so only one process escalates at a time.
+* **Frontend** (Next.js):
   ```bash
   cd frontend
   npm run dev -- --port 3000
   ```
-  Dashboard UI will be available at: `http://localhost:3000`
+  Dashboard: `http://localhost:3000`, which redirects to `/login`. Demo clinicians created by
+  `seed_demo.py` share the password `password123`. The patient check-in prototype is at
+  `/checkin`; its API is unauthenticated until patient sign-in exists.
+
+### 6.5 Tenant Isolation
+Every request made by a signed-in clinician runs its queries as the `eras_app` role with
+`app.hospital_id` set (`scope_to_hospital` in `app/db/session.py`). Row-level security then
+limits every clinical table to that hospital, even for a query that forgets its own filter.
+Both settings end at commit, so a tenant endpoint must do all its reads before committing.
+System jobs, seeds and migrations run as the connecting role and see every hospital. See
+`db/schema/04_security.sql`.

@@ -26,6 +26,9 @@ env/
 .env*.local
 *.pem
 
+# Local server output
+*.log
+
 # OS & Editor
 .DS_Store
 Thumbs.db
