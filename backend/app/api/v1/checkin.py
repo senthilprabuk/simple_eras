@@ -16,6 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
+from app.services.rules_engine import evaluate_check_in
 from app.schemas.checkin import (
     CheckInForm,
     CheckInReceipt,
@@ -373,6 +374,20 @@ async def submit_checkin(payload: CheckInSubmit, db: AsyncSession = Depends(get_
             ],
         )
 
+    # Scored per submission, in the same transaction: an alert raised here
+    # survives a later same-day correction that supersedes this check-in.
+    evaluation, alert_id = await evaluate_check_in(
+        db,
+        episode_id=payload.episode_id,
+        check_in_id=row["check_in_id"],
+        ruleset_id=episode["ruleset_id"],
+        day=payload.day_after_discharge,
+        answers_by_parameter={
+            v.parameter_id: next(x for x in (v.value_num, v.value_bool, v.value_code) if x is not None)
+            for v in payload.values
+        },
+    )
+
     await db.commit()
 
     return CheckInReceipt(
@@ -384,4 +399,6 @@ async def submit_checkin(payload: CheckInSubmit, db: AsyncSession = Depends(get_
         values_recorded=len(payload.values),
         superseded_count=superseded_count,
         duplicate=False,
+        tier=evaluation.tier,
+        alert_id=alert_id,
     )

@@ -91,3 +91,5 @@ class CheckInReceipt(BaseModel):
     values_recorded: int
     superseded_count: int = Field(0, description="Earlier live check-ins for this day that this submission replaced")
     duplicate: bool = Field(False, description="True when the idempotency key replayed an earlier submission")
+    tier: Optional[str] = Field(None, description="The rules engine's verdict; null on a replay")
+    alert_id: Optional[UUID] = Field(None, description="Alert raised by this submission, if any")
