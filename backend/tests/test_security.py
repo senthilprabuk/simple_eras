@@ -56,3 +56,18 @@ async def test_tenant_scope_ends_at_commit():
         assert (await session.execute(text("SELECT count(*) FROM txn.patient"))).scalar_one() == 0
         await session.commit()
         assert (await session.execute(text("SELECT current_user"))).scalar_one() != "eras_app"
+
+
+async def test_hospital_settings_and_templates_are_tenant_scoped(second_hospital):
+    # The fixture hospital has seeded templates; another tenant must not see them.
+    assert await _scalar_as(second_hospital.hospital_id, "SELECT count(*) FROM meta.hospital") == 1
+    assert await _scalar_as(second_hospital.hospital_id, "SELECT count(*) FROM meta.message_template") == 0
+    assert await _scalar_as(1, "SELECT count(*) FROM meta.message_template") == 4
+
+
+async def test_an_unfiltered_settings_update_changes_only_the_callers_hospital(db, second_hospital):
+    async with isolated_session_factory() as session:
+        await scope_to_hospital(session, second_hospital.hospital_id)
+        changed = (await session.execute(text("UPDATE meta.hospital SET city = 'Scoped'"))).rowcount
+        await session.rollback()
+    assert changed == 1

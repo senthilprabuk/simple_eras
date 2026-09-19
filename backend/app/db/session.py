@@ -36,6 +36,19 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.rollback()
             raise
 
+async def get_system_db() -> AsyncGenerator[AsyncSession, None]:
+    """
+    A session that is never tenant-scoped, for the few endpoints that must touch
+    password hashes, which eras_app cannot read. Every query made through it
+    must filter on the caller's hospital explicitly.
+    """
+    async with async_session_factory() as session:
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
+
 async def scope_to_hospital(session: AsyncSession, hospital_id: int) -> None:
     """
     Restrict the rest of this transaction to one hospital's rows via row-level

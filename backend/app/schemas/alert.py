@@ -1,7 +1,9 @@
 from datetime import datetime
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
+
+from app.schemas.dashboard import Reason
 
 # Mirrors the alert_outcome_known constraint on txn.alert.
 Outcome = Literal["reassured", "plan_adjusted", "same_day_review", "emergency"]
@@ -25,6 +27,38 @@ class AlertResolveRequest(BaseModel):
         if value is None:
             return None
         return value.strip() or None
+
+class AlertHistoryItem(BaseModel):
+    """An alert in any state, with who handled it and how quickly."""
+    alert_id: UUID
+    episode_id: UUID
+    patient_name: str
+    mrn: Optional[str] = None
+    tier: str
+    status: str
+    day_after_discharge: int
+    reasons: List[Reason]
+    raised_at: datetime
+    escalated_at: Optional[datetime] = None
+    acknowledged_at: Optional[datetime] = None
+    acknowledged_by_name: Optional[str] = None
+    ack_secs: Optional[int] = Field(None, description="Seconds from raised to acknowledged")
+    ack_window_secs: int
+    resolved_at: Optional[datetime] = None
+    resolved_by_name: Optional[str] = None
+    outcome: Optional[Outcome] = None
+    outcome_note: Optional[str] = None
+
+    @field_validator("reasons", mode="before")
+    @classmethod
+    def plain_strings_become_reasons(cls, value):
+        return [{"name": r, "detail": r} if isinstance(r, str) else r for r in value]
+
+class AlertHistoryResponse(BaseModel):
+    items: List[AlertHistoryItem]
+    total: int
+    limit: int
+    offset: int
 
 class AlertResolveResponse(BaseModel):
     alert_id: UUID

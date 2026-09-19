@@ -1,13 +1,80 @@
+from typing import Literal, Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.core.security import get_current_admin, AuthenticatedAdmin
-from app.schemas.alert import AlertAcknowledgeResponse, AlertResolveRequest, AlertResolveResponse
+from app.schemas.alert import (
+    AlertAcknowledgeResponse,
+    AlertHistoryItem,
+    AlertHistoryResponse,
+    AlertResolveRequest,
+    AlertResolveResponse,
+)
 
 router = APIRouter(prefix="/alerts", tags=["Alerts"])
+
+@router.get("", response_model=AlertHistoryResponse)
+async def list_alerts(
+    status_filter: Literal["all", "open", "acknowledged", "resolved", "expired"] = Query("all", alias="status"),
+    tier: Literal["all", "emergency", "critical", "review", "missed"] = "all",
+    days: int = Query(30, ge=1, le=365, description="Alerts raised in the last N days"),
+    episode_id: Optional[UUID] = None,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    current_admin: AuthenticatedAdmin = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Alert history in every state, newest first, with who handled each and how quickly."""
+    params = {
+        "h_id": current_admin.hospital_id,
+        "status": status_filter,
+        "tier": tier,
+        "days": days,
+        "episode_id": episode_id,
+    }
+    where = """
+        e.hospital_id = :h_id
+        AND a.raised_at >= now() - make_interval(days => :days)
+        AND (:status = 'all' OR a.status = :status)
+        AND (:tier = 'all' OR a.tier = :tier)
+        AND (CAST(:episode_id AS uuid) IS NULL OR a.episode_id = CAST(:episode_id AS uuid))
+    """
+
+    total = (await db.execute(text(f"""
+        SELECT count(*) FROM txn.alert a
+        JOIN txn.patient_episode e ON e.episode_id = a.episode_id
+        WHERE {where}
+    """), params)).scalar_one()
+
+    rows = (await db.execute(text(f"""
+        SELECT
+            a.alert_id, a.episode_id, p.patient_name, p.mrn, a.tier, a.status,
+            ev.day_after_discharge, ev.reasons, a.raised_at, a.escalated_at,
+            a.acknowledged_at, ack.full_name AS acknowledged_by_name,
+            extract(epoch FROM a.acknowledged_at - a.raised_at)::int AS ack_secs,
+            h.ack_window_secs,
+            a.resolved_at, res.full_name AS resolved_by_name, a.outcome, a.outcome_note
+        FROM txn.alert a
+        JOIN txn.patient_episode e     ON e.episode_id = a.episode_id
+        JOIN txn.patient p             ON p.patient_id = e.patient_id
+        JOIN meta.hospital h           ON h.hospital_id = e.hospital_id
+        JOIN txn.check_in_evaluation ev ON ev.evaluation_id = a.evaluation_id
+        LEFT JOIN meta.admin_user ack  ON ack.admin_user_id = a.acknowledged_by
+        LEFT JOIN meta.admin_user res  ON res.admin_user_id = a.resolved_by
+        WHERE {where}
+        ORDER BY a.raised_at DESC, a.alert_id
+        LIMIT :limit OFFSET :offset
+    """), {**params, "limit": limit, "offset": offset})).mappings().all()
+
+    return AlertHistoryResponse(
+        items=[AlertHistoryItem.model_validate(dict(r)) for r in rows],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 async def _refusal(db: AsyncSession, alert_id: UUID, hospital_id: int, action: str) -> HTTPException:
     """

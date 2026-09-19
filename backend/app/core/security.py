@@ -130,3 +130,8 @@ async def get_current_admin(
         full_name=row.full_name,
         role=row.role
     )
+
+async def require_superadmin(admin: AuthenticatedAdmin = Depends(get_current_admin)) -> AuthenticatedAdmin:
+    if admin.role != "superadmin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only a superadmin can make this change")
+    return admin
