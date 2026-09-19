@@ -1,72 +1,87 @@
 "use client";
 
 import React from "react";
+import Link from "next/link";
+import { initials } from "@/lib/triage";
 
-interface NavItem {
-  id: string;
-  icon: string;
-  label: string;
-  active?: boolean;
+interface SidebarProps {
+  fullName: string;
+  role: string;
+  onSignOut: () => void;
 }
 
-const NAV_ITEMS: NavItem[] = [
-  { id: "dashboard", icon: "grid_view", label: "Dashboard", active: true },
-  { id: "patients", icon: "personal_injury", label: "Patients" },
-  { id: "alerts", icon: "crisis_alert", label: "Alerts" },
-  { id: "enrollment", icon: "how_to_reg", label: "Enrollment" },
-  { id: "rulesets", icon: "rule_settings", label: "Rulesets" },
-  { id: "hospitals", icon: "domain", label: "Hospitals" },
-  { id: "whatsapp", icon: "chat", label: "WhatsApp Templates" },
-  { id: "reports", icon: "analytics", label: "Reports" },
-  { id: "settings", icon: "settings", label: "Settings" },
+// Only the dashboard exists so far; the rest are placeholders for pages 2-9.
+const PLANNED_PAGES = [
+  { icon: "personal_injury", label: "Patients" },
+  { icon: "how_to_reg", label: "Enrollment" },
+  { icon: "rule_settings", label: "Rulesets" },
+  { icon: "domain", label: "Hospitals" },
+  { icon: "chat", label: "WhatsApp templates" },
+  { icon: "analytics", label: "Reports" },
+  { icon: "settings", label: "Settings" },
 ];
 
-export default function Sidebar() {
+function Tooltip({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="absolute left-full ml-space-sm px-space-sm py-space-xs bg-inverse-surface text-inverse-on-surface font-label-sm rounded opacity-0 pointer-events-none group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity whitespace-nowrap z-50">
+      {children}
+    </span>
+  );
+}
+
+export default function Sidebar({ fullName, role, onSignOut }: SidebarProps) {
   return (
     <aside className="fixed left-0 top-0 h-full w-[72px] bg-surface-container-lowest border-r border-outline-variant/30 z-50 flex flex-col justify-between items-center py-space-md">
       <div className="flex flex-col items-center w-full">
-        {/* Brand Icon */}
-        <div className="group relative flex items-center justify-center mb-space-lg">
-          <div className="w-10 h-10 rounded-xl bg-primary-container/20 flex items-center justify-center text-primary font-bold text-lg border border-primary/30">
-            <span className="material-symbols-outlined text-[24px] text-primary">healing</span>
-          </div>
-          <div className="absolute left-full ml-space-sm px-space-sm py-space-xs bg-inverse-surface text-inverse-on-surface font-label-sm text-label-sm rounded shadow-sm opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
-            ERAS Remote Monitoring
-          </div>
+        <div className="w-10 h-10 mb-space-lg rounded-xl bg-primary-container/20 flex items-center justify-center border border-primary/30">
+          <span className="material-symbols-outlined text-[24px] text-primary" aria-label="ERAS Remote Monitoring">
+            healing
+          </span>
         </div>
 
-        {/* Navigation Items */}
-        <nav className="flex flex-col items-center gap-space-xs w-full">
-          {NAV_ITEMS.map((item) => (
-            <a
-              key={item.id}
-              href={`#${item.id}`}
-              className={`group relative flex items-center justify-center w-11 h-11 rounded-lg transition-colors ${
-                item.active
-                  ? "bg-surface-container-low text-primary relative before:content-[''] before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:h-7 before:w-[3px] before:bg-primary before:rounded-r font-semibold"
-                  : "text-on-surface-variant hover:bg-surface-container-low hover:text-primary"
-              }`}
+        <nav aria-label="Main" className="flex flex-col items-center gap-space-xs w-full">
+          <Link
+            href="/"
+            aria-current="page"
+            className="group relative flex items-center justify-center w-11 h-11 rounded-lg bg-surface-container-low text-primary"
+          >
+            <span className="material-symbols-outlined text-[22px]" aria-hidden="true">grid_view</span>
+            <span className="sr-only">Dashboard</span>
+            <Tooltip>Dashboard</Tooltip>
+          </Link>
+          {PLANNED_PAGES.map((page) => (
+            <span
+              key={page.label}
+              aria-disabled="true"
+              className="group relative flex items-center justify-center w-11 h-11 rounded-lg text-outline-variant cursor-not-allowed"
             >
-              <span className="material-symbols-outlined text-[22px]">{item.icon}</span>
-              <div className="absolute left-full ml-space-sm px-space-sm py-space-xs bg-inverse-surface text-inverse-on-surface font-label-sm text-label-sm rounded opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
-                {item.label}
-              </div>
-            </a>
+              <span className="material-symbols-outlined text-[22px]" aria-hidden="true">{page.icon}</span>
+              <span className="sr-only">{page.label} (not available yet)</span>
+              <Tooltip>{page.label} — not built yet</Tooltip>
+            </span>
           ))}
         </nav>
       </div>
 
-      {/* Profile Avatar */}
-      <div className="group relative flex flex-col items-center cursor-pointer">
-        <div className="relative">
-          <div className="w-9 h-9 rounded-full bg-primary/20 border border-primary/40 flex items-center justify-center text-primary font-semibold text-xs">
-            SJ
-          </div>
-          <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-surface-container-lowest"></span>
+      <div className="flex flex-col items-center gap-space-sm">
+        <div
+          className="group relative w-9 h-9 rounded-full bg-primary/20 border border-primary/40 flex items-center justify-center text-primary font-semibold text-xs"
+          title={`${fullName} (${role})`}
+        >
+          {initials(fullName)}
+          <Tooltip>
+            {fullName} · {role}
+          </Tooltip>
         </div>
-        <div className="absolute left-full ml-space-sm px-space-sm py-space-xs bg-inverse-surface text-inverse-on-surface font-label-sm text-label-sm rounded opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
-          Nurse Admin Sarah J. (Online)
-        </div>
+        <button
+          type="button"
+          onClick={onSignOut}
+          className="group relative flex items-center justify-center w-9 h-9 rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-error cursor-pointer"
+        >
+          <span className="material-symbols-outlined text-[20px]" aria-hidden="true">logout</span>
+          <span className="sr-only">Sign out</span>
+          <Tooltip>Sign out</Tooltip>
+        </button>
       </div>
     </aside>
   );

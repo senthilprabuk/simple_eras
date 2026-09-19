@@ -1,11 +1,19 @@
 /**
- * ERAS Clinical Remote Monitoring - Backend API Client
- * Connects Next.js Frontend to FastAPI Backend on Port 8000
+ * Clinician dashboard API client. Every request after sign-in carries the
+ * clinician's own token; a 401 ends the session and returns to sign-in.
  */
 
-import { PatientQueueItem } from "@/data/mockPatients";
+import { clearSession, loadSession, saveSession } from "@/lib/session";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+export type Tier = "emergency" | "critical" | "review" | "missed";
+export type Outcome = "reassured" | "plan_adjusted" | "same_day_review" | "emergency";
+
+export interface Reason {
+  name: string;
+  detail: string | null;
+}
 
 export interface QueueRow {
   alert_id: string;
@@ -17,186 +25,187 @@ export interface QueueRow {
   hospital_name: string;
   procedure_code: string;
   day_after_discharge: number;
-  tier: "emergency" | "critical" | "review" | "missed";
-  reasons: any[];
+  tier: Tier;
+  reasons: Reason[];
   raised_at: string;
   age_secs: number;
   acknowledged: boolean;
   acknowledged_at: string | null;
   acknowledged_by_name: string | null;
+  ack_window_secs: number;
 }
 
 export interface QueueResponse {
   items: QueueRow[];
   total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface KpiResponse {
   active_patients: number;
-  open_alerts: number;
-  ack_rate_15min: number;
+  patients_with_open_alerts: number;
+  unresolved_alerts: number;
+  unacknowledged_alerts: number;
+  ack_compliance_pct: number | null;
+  ack_decided_alerts: number;
+  ack_window_secs: number;
   missed_checkins_today: number;
   window_days: number;
 }
 
-export interface TokenResponse {
-  access_token: string;
-  token_type: string;
-  admin_user_id: string;
+export interface ParameterReading {
+  code: string;
+  name: string;
+  type: "numeric" | "boolean" | "ordinal";
+  unit: string | null;
+  decimals: number;
+  concerning_when_true: boolean | null;
+  baseline: number | boolean | string | null;
+  current: number | boolean | string | null;
+}
+
+export interface EpisodeSummary {
+  episode_id: string;
+  patient_name: string;
+  mrn: string | null;
+  phone_e164: string;
+  hospital_name: string;
+  procedure_code: string;
+  procedure_name: string;
+  discharge_date: string;
+  post_op_day: number;
+  status: string;
+  ruleset_version: string;
+  latest_check_in: {
+    check_in_id: string;
+    day_after_discharge: number;
+    submitted_at: string;
+    source: string;
+    photo_submitted: boolean;
+  } | null;
+  readings: ParameterReading[];
+}
+
+export interface HospitalChoice {
   hospital_id: number;
-  full_name: string;
-  role: string;
+  hospital_name: string;
 }
 
-let cachedToken: string | null = null;
+export interface Health {
+  status: string;
+  scheduler_running: boolean;
+  notification_provider: "disabled" | "log";
+}
 
-/**
- * Authenticate with the FastAPI backend using demo nurse credentials.
- */
-export async function loginDemoAdmin(): Promise<string> {
-  if (cachedToken) {
-    return cachedToken;
+export class ApiError extends Error {
+  constructor(public status: number, message: string, public detail?: unknown) {
+    super(message);
   }
-
-  const res = await fetch(`${API_BASE_URL}/api/v1/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      email: "nurse.sarah@stmarys.org",
-      password: "password123",
-    }),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Authentication failed with status ${res.status}`);
-  }
-
-  const data: TokenResponse = await res.json();
-  cachedToken = data.access_token;
-  return cachedToken;
 }
 
 /**
- * Fetch the risk queue for the logged-in hospital.
+ * Sign-in lives on its own page; `next` brings the clinician back afterwards.
+ * A full page load, not client routing, so no patient data survives in memory.
  */
-export async function fetchQueue(): Promise<QueueResponse> {
-  const token = await loginDemoAdmin();
-  const res = await fetch(`${API_BASE_URL}/api/v1/dashboard/queue`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
-
-  if (!res.ok) {
-    throw new Error(`Failed to fetch queue: ${res.statusText}`);
-  }
-
-  return res.json();
+export function redirectToLogin(): void {
+  if (typeof window === "undefined" || window.location.pathname.startsWith("/login")) return;
+  const next = encodeURIComponent(window.location.pathname + window.location.search);
+  window.location.replace(`/login?next=${next}`);
 }
 
-/**
- * Fetch rolling KPIs for the dashboard header.
- */
-export async function fetchKpis(windowDays: number = 7): Promise<KpiResponse> {
-  const token = await loginDemoAdmin();
-  const res = await fetch(`${API_BASE_URL}/api/v1/dashboard/kpis?window_days=${windowDays}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
-
-  if (!res.ok) {
-    throw new Error(`Failed to fetch KPIs: ${res.statusText}`);
-  }
-
-  return res.json();
+function describe(detail: unknown, status: number): string {
+  if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object" && "message" in detail) return String(detail.message);
+  if (Array.isArray(detail)) return "Some details were not valid. Check the form and try again.";
+  return `Request failed (${status})`;
 }
 
-/**
- * Acknowledge an open alert.
- */
-export async function acknowledgeAlert(alertId: string, note?: string): Promise<any> {
-  const token = await loginDemoAdmin();
-  const res = await fetch(`${API_BASE_URL}/api/v1/alerts/${alertId}/acknowledge`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ note: note || "Acknowledged from clinical workstation" }),
-  });
-
-  if (!res.ok) {
-    const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.detail || `Acknowledge failed: ${res.status}`);
-  }
-
-  return res.json();
-}
-
-/**
- * Adapter to translate backend QueueRow to frontend PatientQueueItem.
- */
-export function mapQueueRowToPatientItem(row: QueueRow): PatientQueueItem {
-  // Age calculation
-  const mins = Math.max(1, Math.floor(row.age_secs / 60));
-  const alertAgeText = mins < 60 ? `${mins}m ago` : `${Math.floor(mins / 60)}h ago`;
-
-  // SLA calculation (15 min SLA window = 900s)
-  const remainingSecs = 900 - row.age_secs;
-  const remainingMins = Math.ceil(remainingSecs / 60);
-  const slaText =
-    row.acknowledged
-      ? "SLA Met"
-      : remainingMins > 0
-      ? `${remainingMins}m SLA remains`
-      : "SLA Breached";
-
-  // Reasons transformation
-  const formattedReasons = (row.reasons || []).map((r: any) => {
-    if (typeof r === "object" && r !== null) {
-      const text = r.detail || r.text || r.name || JSON.stringify(r);
-      const isSevere = (r.weight && r.weight >= 3) || (r.score && r.score >= 3) || !!r.isSevere;
-      return { text, isSevere };
+async function request<T>(path: string, init: RequestInit = {}, authenticated = true): Promise<T> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (authenticated) {
+    const session = loadSession();
+    if (!session) {
+      redirectToLogin();
+      throw new ApiError(401, "Please sign in.");
     }
-    return { text: String(r), isSevere: false };
-  });
-
-  // Action type mapping
-  let actionType: "call" | "acknowledge" | "ping" | "none" = "acknowledge";
-  if (row.acknowledged) {
-    actionType = "none";
-  } else if (row.tier === "emergency") {
-    actionType = "call";
-  } else if (row.tier === "missed") {
-    actionType = "ping";
+    headers.Authorization = `Bearer ${session.token}`;
   }
 
-  // Procedure display mapping
-  const procedureDisplay =
-    row.procedure_code === "TKA_PRIMARY"
-      ? "Left TKA"
-      : row.procedure_code === "TKA_BILATERAL"
-      ? "Bilateral TKA"
-      : row.procedure_code || "Knee Arthroplasty";
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}${path}`, { ...init, headers });
+  } catch {
+    throw new ApiError(0, "Cannot reach the server. Check the connection and try again.");
+  }
 
-  return {
-    id: row.patient_id,
-    name: row.patient_name,
-    mrn: row.mrn || "N/A",
-    post_op_day: row.day_after_discharge,
-    procedure: procedureDisplay,
-    tier: row.tier,
-    reasons: formattedReasons,
-    alert_id: row.alert_id,
-    alert_age_text: alertAgeText,
-    sla_text: slaText,
-    acknowledged: row.acknowledged,
-    acknowledged_text: row.acknowledged
-      ? row.acknowledged_by_name
-        ? `Ack by ${row.acknowledged_by_name}`
-        : "Acknowledged"
-      : undefined,
-    action_type: actionType,
-  };
+  if (res.status === 401 && authenticated) {
+    clearSession();
+    redirectToLogin();
+    throw new ApiError(401, "Your session has ended. Please sign in again.");
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, describe(body.detail, res.status), body.detail);
+  }
+  return res.json();
+}
+
+export async function signIn(email: string, password: string, hospitalId?: number): Promise<void> {
+  const data = await request<{
+    access_token: string;
+    expires_in: number;
+    admin_user_id: string;
+    hospital_id: number;
+    hospital_name: string;
+    full_name: string;
+    role: string;
+  }>(
+    "/api/v1/auth/login",
+    { method: "POST", body: JSON.stringify({ email, password, hospital_id: hospitalId }) },
+    false,
+  );
+  saveSession({
+    token: data.access_token,
+    expiresAt: Date.now() + data.expires_in * 1000,
+    adminUserId: data.admin_user_id,
+    hospitalId: data.hospital_id,
+    hospitalName: data.hospital_name,
+    fullName: data.full_name,
+    role: data.role,
+  });
+}
+
+/** Hospitals offered when the same account exists at several; only sent after the password matched. */
+export function hospitalChoices(error: unknown): HospitalChoice[] | null {
+  if (!(error instanceof ApiError) || error.status !== 400) return null;
+  const detail = error.detail as { hospitals?: HospitalChoice[] } | undefined;
+  return detail?.hospitals ?? null;
+}
+
+export function fetchQueue(limit = 200): Promise<QueueResponse> {
+  return request<QueueResponse>(`/api/v1/dashboard/queue?limit=${limit}`);
+}
+
+export function fetchKpis(windowDays = 7): Promise<KpiResponse> {
+  return request<KpiResponse>(`/api/v1/dashboard/kpis?window_days=${windowDays}`);
+}
+
+export function fetchEpisodeSummary(episodeId: string): Promise<EpisodeSummary> {
+  return request<EpisodeSummary>(`/api/v1/episodes/${episodeId}/summary`);
+}
+
+export function fetchHealth(): Promise<Health> {
+  return request<Health>("/health", {}, false);
+}
+
+export function acknowledgeAlert(alertId: string): Promise<unknown> {
+  return request(`/api/v1/alerts/${alertId}/acknowledge`, { method: "POST" });
+}
+
+export function resolveAlert(alertId: string, outcome: Outcome, note: string): Promise<unknown> {
+  return request(`/api/v1/alerts/${alertId}/resolve`, {
+    method: "POST",
+    body: JSON.stringify({ outcome, note: note.trim() || null }),
+  });
 }

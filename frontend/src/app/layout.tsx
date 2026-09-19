@@ -1,5 +1,11 @@
 import type { Metadata } from "next";
+import { Inter } from "next/font/google";
+import "material-symbols/outlined.css";
 import "./globals.css";
+
+// next/font downloads Inter at build time and serves it from this app, so
+// workstations never request fonts from Google.
+const inter = Inter({ subsets: ["latin"], display: "swap", variable: "--font-inter-next" });
 
 export const metadata: Metadata = {
   title: "ERAS Clinical Remote Monitoring | Risk Queue",
@@ -12,21 +18,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <head>
-        <link
-          rel="stylesheet"
-          href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200"
-        />
-        <link
-          rel="stylesheet"
-          href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
-        />
-        <link
-          rel="stylesheet"
-          href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap"
-        />
-      </head>
+    <html lang="en" className={inter.variable}>
       <body className="bg-surface-bright font-body-md text-on-surface antialiased">
         {children}
       </body>

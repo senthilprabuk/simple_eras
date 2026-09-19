@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import Sidebar from "@/components/Sidebar";
 import TopHeader from "@/components/TopHeader";
 import KpiMetrics from "@/components/KpiMetrics";
@@ -8,222 +8,220 @@ import QueueControls from "@/components/QueueControls";
 import RiskQueueTable from "@/components/RiskQueueTable";
 import TriageStatusBanner from "@/components/TriageStatusBanner";
 import PatientDetailDrawer from "@/components/PatientDetailDrawer";
-import { INITIAL_PATIENTS, PatientQueueItem } from "@/data/mockPatients";
 import {
-  fetchQueue,
-  fetchKpis,
-  acknowledgeAlert,
-  mapQueueRowToPatientItem,
+  ApiError,
+  Health,
   KpiResponse,
+  QueueResponse,
+  QueueRow,
+  Tier,
+  acknowledgeAlert,
+  fetchHealth,
+  fetchKpis,
+  fetchQueue,
+  redirectToLogin,
 } from "@/lib/api";
+import { clearSession, getSessionSnapshot, loadSession, subscribeSession } from "@/lib/session";
+import { matchesSearch, tierCounts } from "@/lib/triage";
+
+const REFRESH_MS = 30_000;
+const CLOCK_MS = 15_000;
+
+interface Snapshot {
+  queue: QueueResponse;
+  kpis: KpiResponse;
+  fetchedAt: number;
+}
+
+function useNow(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
+}
+
+function errorMessage(err: unknown, fallback: string): string {
+  return err instanceof ApiError ? err.message : fallback;
+}
+
+function without(record: Record<string, string>, key: string): Record<string, string> {
+  const copy = { ...record };
+  delete copy[key];
+  return copy;
+}
 
 export default function DashboardPage() {
-  const [patients, setPatients] = useState<PatientQueueItem[]>(INITIAL_PATIENTS);
-  const [kpis, setKpis] = useState<KpiResponse | null>(null);
-  const [isLive, setIsLive] = useState<boolean>(false);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [searchQuery, setSearchQuery] = useState<string>("");
-  const [currentTier, setCurrentTier] = useState<string>("all");
-  const [currentPod, setCurrentPod] = useState<string>("all");
-  const [selectedPatient, setSelectedPatient] = useState<PatientQueueItem | null>(null);
+  const session = useSyncExternalStore(subscribeSession, getSessionSnapshot, () => null);
+  const now = useNow(CLOCK_MS);
 
-  // Load live data from FastAPI Backend on mount or refresh
-  const loadDashboardData = async () => {
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [health, setHealth] = useState<Health | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [tierFilter, setTierFilter] = useState<Tier | "all">("all");
+  const [selected, setSelected] = useState<QueueRow | null>(null);
+  const [pending, setPending] = useState<Record<string, boolean>>({});
+  const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
+
+  const load = useCallback(async () => {
     try {
-      setLoading(true);
-      const [queueRes, kpiRes] = await Promise.all([
-        fetchQueue(),
-        fetchKpis(),
-      ]);
-
-      if (queueRes?.items && queueRes.items.length > 0) {
-        const mappedItems = queueRes.items.map(mapQueueRowToPatientItem);
-        setPatients(mappedItems);
-        setIsLive(true);
-      }
-      if (kpiRes) {
-        setKpis(kpiRes);
-      }
+      const [queue, kpis] = await Promise.all([fetchQueue(), fetchKpis()]);
+      setSnapshot({ queue, kpis, fetchedAt: Date.now() });
+      setLoadError(null);
     } catch (err) {
-      console.warn("Backend API unavailable, falling back to local demo state:", err);
-      setIsLive(false);
-    } finally {
-      setLoading(false);
+      if (err instanceof ApiError && err.status === 401) return;
+      setLoadError(errorMessage(err, "Could not load the queue."));
     }
-  };
-
-  useEffect(() => {
-    loadDashboardData();
   }, []);
 
-  // Compute counts based on all active patients
-  const counts = {
-    emergency: patients.filter((p) => p.tier === "emergency").length,
-    critical: patients.filter((p) => p.tier === "critical").length,
-    review: patients.filter((p) => p.tier === "review").length,
-    missed: patients.filter((p) => p.tier === "missed").length,
+  useEffect(() => {
+    if (!loadSession()) {
+      redirectToLogin();
+      return;
+    }
+    load();
+    fetchHealth().then(setHealth).catch(() => setHealth(null));
+    const id = setInterval(load, REFRESH_MS);
+    return () => clearInterval(id);
+  }, [load]);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
   };
 
-  // Filtered patients for the table based on search, tier, and pod
-  const filteredPatients = useMemo(() => {
-    return patients.filter((patient) => {
-      // 1. Search Query
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        const matchesName = patient.name.toLowerCase().includes(q);
-        const matchesMrn = (patient.mrn || "").toLowerCase().includes(q);
-        if (!matchesName && !matchesMrn) return false;
-      }
-      // 2. Tier Filter
-      if (currentTier !== "all" && patient.tier !== currentTier) {
-        return false;
-      }
-      // 3. Pod Filter
-      if (currentPod === "poda" && patient.post_op_day % 2 === 0) {
-        return false;
-      }
-      if (currentPod === "podb" && patient.post_op_day % 2 !== 0) {
-        return false;
-      }
-      return true;
-    });
-  }, [patients, searchQuery, currentTier, currentPod]);
-
-  const handleAcknowledgeAlert = async (alertId: string, patientId: string) => {
+  const handleAcknowledge = async (row: QueueRow) => {
+    setPending((p) => ({ ...p, [row.alert_id]: true }));
+    setRowErrors((e) => without(e, row.alert_id));
     try {
-      if (isLive) {
-        await acknowledgeAlert(alertId, "Acknowledged by Nurse Sarah Jenkins from workstation");
-        // Refresh KPIs from backend
-        fetchKpis().then(setKpis).catch(() => {});
-      }
-      setPatients((prev) =>
-        prev.map((item) => {
-          if (item.id === patientId) {
-            return {
-              ...item,
-              acknowledged: true,
-              acknowledged_text: "Ack by Nurse Sarah Jenkins (Just now)",
-              action_type: "none",
-            };
-          }
-          return item;
-        })
-      );
+      await acknowledgeAlert(row.alert_id);
     } catch (err) {
-      console.error("Failed to acknowledge alert:", err);
-    }
-  };
-
-  const handleResolveAlert = async (patientId: string, outcome: string, note: string) => {
-    const targetPatient = patients.find((p) => p.id === patientId);
-    if (targetPatient?.alert_id && isLive) {
-      try {
-        await acknowledgeAlert(
-          targetPatient.alert_id,
-          note || `Resolved with outcome: ${outcome}`
-        );
-        fetchKpis().then(setKpis).catch(() => {});
-      } catch (err) {
-        console.error("Failed to resolve alert on backend:", err);
+      if (!(err instanceof ApiError && err.status === 401)) {
+        setRowErrors((e) => ({ ...e, [row.alert_id]: errorMessage(err, "Could not acknowledge.") }));
       }
     }
-
-    setPatients((prev) =>
-      prev.map((item) => {
-        if (item.id === patientId) {
-          return {
-            ...item,
-            acknowledged: true,
-            acknowledged_text: `Resolved (${outcome.replace(/_/g, " ")})`,
-            action_type: "none",
-          };
-        }
-        return item;
-      })
-    );
+    // Reload either way: on a conflict the row shows who got there first.
+    await load();
+    setPending((p) => ({ ...p, [row.alert_id]: false }));
   };
+
+  const handleResolved = async () => {
+    setSelected(null);
+    await load();
+  };
+
+  const handleSignOut = () => {
+    clearSession();
+    // Full load so no patient data survives in memory after sign-out.
+    window.location.replace("/login");
+  };
+
+  if (!session) {
+    return (
+      <div className="min-h-screen bg-surface-bright flex items-center justify-center">
+        <span className="font-body-md text-on-surface-variant">Loading…</span>
+      </div>
+    );
+  }
+
+  const items = snapshot?.queue.items ?? [];
+  const counts = tierCounts(items);
+  const visible = items.filter(
+    (row) => (tierFilter === "all" || row.tier === tierFilter) && matchesSearch(row, searchQuery),
+  );
+  // Keep the drawer on the freshest copy of its row; if the row has left the
+  // queue (resolved elsewhere), keep the last copy so a half-typed note is not lost.
+  const selectedRow = selected ? items.find((r) => r.alert_id === selected.alert_id) ?? selected : null;
 
   return (
     <div className="min-h-screen bg-surface-bright text-on-surface">
-      {/* Left Icon Rail Navigation */}
-      <Sidebar />
+      <Sidebar fullName={session.fullName} role={session.role} onSignOut={handleSignOut} />
 
-      {/* Main Container with 72px left offset */}
       <div className="pl-[72px]">
-        {/* Fixed Header with Search */}
-        <TopHeader searchQuery={searchQuery} onSearchChange={setSearchQuery} />
+        <TopHeader
+          hospitalName={session.hospitalName}
+          fullName={session.fullName}
+          lastRefreshed={snapshot?.fetchedAt ?? null}
+          now={now}
+          refreshing={refreshing}
+          onRefresh={handleRefresh}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+        />
 
-        {/* Scrollable Dashboard View */}
         <main className="w-full pt-14 bg-surface-bright min-h-screen">
-          <div className="max-w-7xl mx-auto px-space-xl py-space-lg">
-            <div className="flex flex-col w-full gap-space-lg">
-              {/* Connection Status Pill */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-label-sm text-[11px] font-medium ${
-                    isLive 
-                      ? "bg-emerald-500/10 text-emerald-600 border border-emerald-500/20" 
-                      : "bg-amber-500/10 text-amber-600 border border-amber-500/20"
-                  }`}>
-                    <span className={`w-1.5 h-1.5 rounded-full ${isLive ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`} />
-                    {isLive ? "LIVE NEON POSTGRESQL (CBE-01)" : "OFFLINE DEMO MODE"}
-                  </span>
-                  {loading && (
-                    <span className="font-label-sm text-[11px] text-on-surface-variant flex items-center gap-1">
-                      <span className="material-symbols-outlined text-[13px] animate-spin">sync</span>
-                      Syncing queue...
-                    </span>
-                  )}
-                </div>
-
-                {searchQuery && (
-                  <button
-                    type="button"
-                    onClick={() => setSearchQuery("")}
-                    className="text-label-sm text-primary hover:underline cursor-pointer flex items-center gap-1"
-                  >
-                    <span>Clear search ("{searchQuery}")</span>
-                    <span className="material-symbols-outlined text-[14px]">close</span>
-                  </button>
-                )}
+          <div className="max-w-7xl mx-auto px-space-xl py-space-lg flex flex-col gap-space-lg">
+            {loadError && (
+              <div
+                role="alert"
+                className="flex items-center justify-between gap-space-md px-space-md py-space-sm rounded-xl bg-error-container text-on-error-container border border-error/30"
+              >
+                <span className="font-body-md">
+                  {loadError}
+                  {snapshot && " The figures below are from the last successful update."}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleRefresh}
+                  className="font-label-md px-3 py-1 rounded bg-surface-container-lowest text-error cursor-pointer"
+                >
+                  Retry
+                </button>
               </div>
+            )}
 
-              {/* Top 4 KPI Metrics */}
-              <KpiMetrics kpis={kpis} />
+            <KpiMetrics kpis={snapshot?.kpis ?? null} />
 
-              {/* Clinical Queue Section Header & Controls */}
-              <QueueControls
-                currentPod={currentPod}
-                onSelectPod={setCurrentPod}
-                currentTier={currentTier}
-                onSelectTier={setCurrentTier}
-                counts={counts}
-              />
+            <QueueControls
+              counts={counts}
+              total={snapshot?.queue.total ?? 0}
+              loaded={items.length}
+              tierFilter={tierFilter}
+              onTierFilter={setTierFilter}
+            />
 
-              {/* Main Prioritized Clinical Queue Table */}
+            {snapshot === null ? (
+              <p className="font-body-md text-on-surface-variant py-space-xl text-center">
+                {loadError ? "The queue could not be loaded." : "Loading the queue…"}
+              </p>
+            ) : (
               <RiskQueueTable
-                patients={filteredPatients}
-                onSelectPatient={(p) => setSelectedPatient(p)}
-                onAcknowledgeAlert={handleAcknowledgeAlert}
+                rows={visible}
+                emptyMessage={
+                  items.length === 0
+                    ? "No unresolved alerts. Every monitored patient is currently within their expected recovery."
+                    : "No alerts match this search or filter."
+                }
+                now={now}
+                fetchedAt={snapshot.fetchedAt}
+                pending={pending}
+                rowErrors={rowErrors}
+                onAcknowledge={handleAcknowledge}
+                onOpen={setSelected}
               />
+            )}
 
-              {/* Automated ERAS Triage Routine Status Banner */}
-              <TriageStatusBanner
-                onTriggerSweep={loadDashboardData}
-                normalCount={6}
-                totalEnrolled={kpis?.active_patients || 13}
-              />
-            </div>
+            <TriageStatusBanner
+              kpis={snapshot?.kpis ?? null}
+              health={health}
+              hospitalName={session.hospitalName}
+            />
           </div>
         </main>
       </div>
 
-      {/* Patient Trajectory & Alert Resolution Drawer */}
-      <PatientDetailDrawer
-        patient={selectedPatient}
-        onClose={() => setSelectedPatient(null)}
-        onResolveAlert={handleResolveAlert}
-      />
+      {selectedRow && (
+        <PatientDetailDrawer
+          key={selectedRow.alert_id}
+          row={selectedRow}
+          onClose={() => setSelected(null)}
+          onResolved={handleResolved}
+        />
+      )}
     </div>
   );
 }

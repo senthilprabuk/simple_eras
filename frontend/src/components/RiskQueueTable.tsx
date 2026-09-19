@@ -1,281 +1,177 @@
 "use client";
 
-import React, { useState } from "react";
-import { PatientQueueItem } from "@/data/mockPatients";
+import React from "react";
+import type { QueueRow, Tier } from "@/lib/api";
+import { currentAgeSecs, formatDuration, reasonText, slaFor, slaLabel } from "@/lib/triage";
 
 interface RiskQueueTableProps {
-  patients: PatientQueueItem[];
-  onSelectPatient?: (patient: PatientQueueItem) => void;
-  onAcknowledgeAlert?: (alertId: string, patientId: string) => Promise<void>;
+  rows: QueueRow[];
+  emptyMessage: string;
+  now: number;
+  fetchedAt: number;
+  pending: Record<string, boolean>;
+  rowErrors: Record<string, string>;
+  onAcknowledge: (row: QueueRow) => void;
+  onOpen: (row: QueueRow) => void;
+}
+
+const TIER_BADGE: Record<Tier, { icon: string; label: string; className: string }> = {
+  emergency: { icon: "e911_emergency", label: "EMERGENCY", className: "bg-error text-on-error" },
+  critical: {
+    icon: "crisis_alert",
+    label: "CRITICAL",
+    className: "bg-surface-container-lowest border border-error text-error",
+  },
+  review: { icon: "search", label: "REVIEW", className: "bg-tertiary-fixed text-on-tertiary-fixed" },
+  missed: {
+    icon: "schedule",
+    label: "MISSED",
+    className: "bg-surface-bright border border-outline-variant/50 text-on-surface-variant",
+  },
+};
+
+export function TierBadge({ tier }: { tier: Tier }) {
+  const badge = TIER_BADGE[tier];
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded font-label-sm font-semibold tracking-wide ${badge.className}`}
+    >
+      <span className="material-symbols-outlined text-[14px]" aria-hidden="true">
+        {badge.icon}
+      </span>
+      {badge.label}
+    </span>
+  );
 }
 
 export default function RiskQueueTable({
-  patients: initialPatients,
-  onSelectPatient,
-  onAcknowledgeAlert,
+  rows,
+  emptyMessage,
+  now,
+  fetchedAt,
+  pending,
+  rowErrors,
+  onAcknowledge,
+  onOpen,
 }: RiskQueueTableProps) {
-  const [patients, setPatients] = useState<PatientQueueItem[]>(initialPatients);
-  const [actionLoading, setActionLoading] = useState<{ [key: string]: boolean }>({});
-
-  React.useEffect(() => {
-    setPatients(initialPatients);
-  }, [initialPatients]);
-
-  const handleActionClick = async (patientId: string, actionType: string) => {
-    setActionLoading((prev) => ({ ...prev, [patientId]: true }));
-
-    const targetPatient = patients.find((p) => p.id === patientId);
-
-    if (targetPatient?.alert_id && onAcknowledgeAlert && (actionType === "acknowledge" || actionType === "call")) {
-      try {
-        await onAcknowledgeAlert(targetPatient.alert_id, patientId);
-      } catch (err) {
-        console.error("Failed to acknowledge alert:", err);
-      }
-    }
-
-    setTimeout(() => {
-      setActionLoading((prev) => ({ ...prev, [patientId]: false }));
-      setPatients((prevList) =>
-        prevList.map((item) => {
-          if (item.id === patientId) {
-            if (actionType === "call") {
-              return {
-                ...item,
-                acknowledged: true,
-                acknowledged_text: "Call initiated & Ack by On-Call",
-                action_type: "none",
-              };
-            } else if (actionType === "ping") {
-              return {
-                ...item,
-                acknowledged_text: "WhatsApp Reminder Dispatched (Just now)",
-                action_type: "none",
-              };
-            } else {
-              return {
-                ...item,
-                acknowledged: true,
-                acknowledged_text: "Ack by Nurse Sarah Jenkins (Just now)",
-                action_type: "none",
-              };
-            }
-          }
-          return item;
-        })
-      );
-    }, 400);
-  };
-
   return (
     <section
-      aria-label="Risk Queue Table"
+      aria-label="Risk queue"
       className="bg-surface-container-lowest rounded-xl border border-outline-variant/30 overflow-hidden shadow-sm"
     >
       <div className="overflow-x-auto">
         <table className="w-full text-left border-collapse min-w-[980px]">
           <thead>
-            <tr className="bg-surface-bright/70 border-b border-outline-variant/30 text-on-surface-variant font-label-sm text-label-sm uppercase tracking-wider">
-              <th className="py-3 px-space-md w-[140px]">Tier Severity</th>
-              <th className="py-3 px-space-md w-[220px]">Patient &amp; Cohort Day</th>
-              <th className="py-3 px-space-md">Clinical Flag Reasons</th>
-              <th className="py-3 px-space-md w-[130px]">Alert Age / SLA</th>
-              <th className="py-3 px-space-md w-[260px]">Protocol Action</th>
-              <th className="py-3 px-space-md text-right w-[60px]">Details</th>
+            <tr className="bg-surface-bright/70 border-b border-outline-variant/30 text-on-surface-variant font-label-sm uppercase tracking-wider">
+              <th scope="col" className="py-3 px-space-md w-[140px]">Tier</th>
+              <th scope="col" className="py-3 px-space-md w-[240px]">Patient</th>
+              <th scope="col" className="py-3 px-space-md">Clinical reasons</th>
+              <th scope="col" className="py-3 px-space-md w-[170px]">Age / SLA</th>
+              <th scope="col" className="py-3 px-space-md w-[230px]">Action</th>
+              <th scope="col" className="py-3 px-space-md w-[60px]"><span className="sr-only">Details</span></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-outline-variant/30">
-            {patients.map((patient) => {
-              const isLoading = !!actionLoading[patient.id];
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={6} className="py-space-xl px-space-md text-center font-body-md text-on-surface-variant">
+                  {emptyMessage}
+                </td>
+              </tr>
+            )}
+
+            {rows.map((row) => {
+              const age = currentAgeSecs(row, fetchedAt, now);
+              const sla = slaFor(age, row.ack_window_secs, row.acknowledged);
+              const busy = !!pending[row.alert_id];
+              const error = rowErrors[row.alert_id];
 
               return (
-                <tr
-                  key={patient.id}
-                  className="hover:bg-surface-bright/60 transition-colors group"
-                >
-                  {/* Tier Severity */}
-                  <td className="py-3.5 px-space-md align-middle">
-                    {patient.tier === "emergency" && (
-                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-error text-on-error font-label-sm text-label-sm font-semibold tracking-wide">
-                        <span className="material-symbols-outlined text-[14px]">
-                          e911_emergency
-                        </span>
-                        EMERGENCY
-                      </span>
-                    )}
-
-                    {patient.tier === "critical" && (
-                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-surface-container-lowest border border-error text-error font-label-sm text-label-sm font-semibold tracking-wide">
-                        <span className="material-symbols-outlined text-[14px]">
-                          crisis_alert
-                        </span>
-                        CRITICAL
-                      </span>
-                    )}
-
-                    {patient.tier === "review" && (
-                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-tertiary-fixed text-on-tertiary-fixed font-label-sm text-label-sm font-semibold tracking-wide">
-                        <span className="material-symbols-outlined text-[14px]">
-                          search
-                        </span>
-                        REVIEW
-                      </span>
-                    )}
-
-                    {patient.tier === "missed" && (
-                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-surface-bright border border-outline-variant/50 text-on-surface-variant font-label-sm text-label-sm font-semibold tracking-wide">
-                        <span className="material-symbols-outlined text-[14px]">
-                          schedule
-                        </span>
-                        MISSED
-                      </span>
-                    )}
+                <tr key={row.alert_id} className="hover:bg-surface-bright/60 transition-colors align-middle">
+                  <td className="py-3.5 px-space-md">
+                    <TierBadge tier={row.tier} />
                   </td>
 
-                  {/* Patient & Cohort Day */}
-                  <td className="py-3.5 px-space-md align-middle">
-                    <div className="flex flex-col">
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-title-sm text-title-sm font-semibold text-on-surface">
-                          {patient.name}
-                        </span>
-                        <span className="font-body-sm text-body-sm text-on-surface-variant">
-                          · POD {patient.post_op_day} ({patient.procedure})
-                        </span>
-                      </div>
-                      <span className="font-label-sm text-label-sm text-on-surface-variant">
-                        MRN: #{patient.mrn}
-                      </span>
+                  <td className="py-3.5 px-space-md">
+                    <div className="font-title-sm text-on-surface">{row.patient_name}</div>
+                    <div className="font-body-sm text-on-surface-variant">
+                      MRN {row.mrn ?? "not recorded"} · {row.procedure_code} · raised on POD {row.day_after_discharge}
                     </div>
                   </td>
 
-                  {/* Clinical Flag Reasons */}
-                  <td className="py-3.5 px-space-md align-middle">
+                  <td className="py-3.5 px-space-md">
                     <div className="flex flex-wrap gap-1.5">
-                      {patient.reasons.map((r, i) => (
+                      {row.reasons.map((reason, i) => (
                         <span
                           key={i}
-                          className={`inline-flex items-center px-2 py-0.5 rounded bg-surface-bright border font-body-sm text-body-sm ${
-                            r.isSevere
-                              ? "border-error/30 text-error font-medium"
-                              : "border-outline-variant/40 text-on-surface"
-                          }`}
+                          className="inline-flex items-center px-2 py-0.5 rounded bg-surface-bright border border-outline-variant/40 font-body-sm text-on-surface"
                         >
-                          {r.text}
+                          {reasonText(reason)}
                         </span>
                       ))}
                     </div>
                   </td>
 
-                  {/* Alert Age / SLA */}
-                  <td className="py-3.5 px-space-md align-middle">
-                    {patient.tier === "emergency" ? (
-                      <div>
-                        <div className="flex items-center gap-1.5">
-                          <span className="relative flex h-2 w-2">
-                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-error opacity-75"></span>
-                            <span className="relative inline-flex rounded-full h-2 w-2 bg-error"></span>
-                          </span>
-                          <span className="font-title-sm text-title-sm font-semibold text-error">
-                            {patient.alert_age_text}
-                          </span>
-                        </div>
-                        <span className="font-label-sm text-label-sm text-on-surface-variant">
-                          {patient.sla_text}
-                        </span>
-                      </div>
-                    ) : patient.tier === "critical" ? (
-                      <div>
-                        <div className="flex items-center gap-1.5">
-                          <span className="w-2 h-2 rounded-full bg-tertiary"></span>
-                          <span className="font-title-sm text-title-sm font-semibold text-tertiary">
-                            {patient.alert_age_text}
-                          </span>
-                        </div>
-                        <span className="font-label-sm text-label-sm text-on-surface-variant">
-                          {patient.sla_text}
-                        </span>
-                      </div>
-                    ) : (
-                      <div>
-                        <span className="font-title-sm text-title-sm font-medium text-on-surface-variant">
-                          {patient.alert_age_text}
-                        </span>
-                        <span className="block font-label-sm text-label-sm text-on-surface-variant">
-                          {patient.sla_text}
-                        </span>
-                      </div>
-                    )}
+                  <td className="py-3.5 px-space-md">
+                    <div className="font-title-sm text-on-surface">{formatDuration(age)} ago</div>
+                    <div
+                      className={`font-label-sm ${
+                        sla.state === "breached" ? "text-error font-semibold" : "text-on-surface-variant"
+                      }`}
+                    >
+                      {slaLabel(sla)}
+                    </div>
                   </td>
 
-                  {/* Protocol Action */}
-                  <td className="py-3.5 px-space-md align-middle">
-                    {patient.action_type === "call" && !patient.acknowledged && (
-                      <div className="flex flex-col gap-1">
+                  <td className="py-3.5 px-space-md">
+                    {row.acknowledged ? (
+                      <div className="flex flex-col items-start gap-1">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-bright border border-outline-variant/30 font-label-sm text-on-surface-variant">
+                          <span className="material-symbols-outlined text-[15px] text-primary" aria-hidden="true">
+                            verified
+                          </span>
+                          Ack by {row.acknowledged_by_name ?? "a former clinician"}
+                        </span>
                         <button
                           type="button"
-                          disabled={isLoading}
-                          onClick={() => handleActionClick(patient.id, "call")}
-                          className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-surface-container-lowest border border-primary text-primary font-label-md text-label-md rounded hover:bg-surface-container-low transition-colors w-fit cursor-pointer"
+                          onClick={() => onOpen(row)}
+                          className="font-label-md text-primary hover:underline cursor-pointer"
                         >
-                          <span className="material-symbols-outlined text-[16px]">
-                            {isLoading ? "sync" : "call"}
-                          </span>
-                          {isLoading ? "Connecting..." : "Acknowledge & Call"}
+                          Record outcome
                         </button>
-                        <span className="font-label-sm text-label-sm text-on-surface-variant">
-                          Protocol: Rapid On-Call Escalation
-                        </span>
                       </div>
-                    )}
-
-                    {patient.action_type === "acknowledge" && !patient.acknowledged && (
+                    ) : (
                       <button
                         type="button"
-                        disabled={isLoading}
-                        onClick={() => handleActionClick(patient.id, "acknowledge")}
-                        className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-surface-container-lowest border border-primary text-primary font-label-md text-label-md rounded hover:bg-surface-container-low transition-colors cursor-pointer"
+                        disabled={busy}
+                        onClick={() => onAcknowledge(row)}
+                        aria-label={`Acknowledge alert for ${row.patient_name}`}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-primary text-primary font-label-md rounded hover:bg-surface-container-low transition-colors cursor-pointer disabled:opacity-60"
                       >
-                        <span className="material-symbols-outlined text-[16px]">
-                          {isLoading ? "sync" : "check_circle"}
+                        <span
+                          className={`material-symbols-outlined text-[16px] ${busy ? "animate-spin" : ""}`}
+                          aria-hidden="true"
+                        >
+                          {busy ? "progress_activity" : "check_circle"}
                         </span>
-                        {isLoading ? "Updating..." : "Acknowledge"}
+                        {busy ? "Acknowledging…" : "Acknowledge"}
                       </button>
                     )}
-
-                    {patient.action_type === "ping" && !patient.acknowledged_text && (
-                      <button
-                        type="button"
-                        disabled={isLoading}
-                        onClick={() => handleActionClick(patient.id, "ping")}
-                        className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-surface-container-lowest border border-outline-variant/60 text-secondary font-label-md text-label-md rounded hover:bg-surface-container-low hover:border-secondary transition-colors cursor-pointer"
-                      >
-                        <span className="material-symbols-outlined text-[16px] text-primary">
-                          {isLoading ? "sync" : "chat"}
-                        </span>
-                        {isLoading ? "Dispatching..." : "Ping WhatsApp Reminder"}
-                      </button>
-                    )}
-
-                    {(patient.acknowledged || patient.acknowledged_text) && (
-                      <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-surface-bright border border-outline-variant/30 text-on-surface-variant font-label-sm text-label-sm">
-                        <span className="material-symbols-outlined text-[15px] text-primary">
-                          verified
-                        </span>
-                        <span>{patient.acknowledged_text}</span>
-                      </div>
+                    {error && (
+                      <p role="alert" className="mt-1 font-body-sm text-error">
+                        {error}
+                      </p>
                     )}
                   </td>
 
-                  {/* Details chevron */}
-                  <td className="py-3.5 px-space-md align-middle text-right">
+                  <td className="py-3.5 px-space-md text-right">
                     <button
                       type="button"
-                      onClick={() => onSelectPatient?.(patient)}
-                      aria-label={`View records for ${patient.name}`}
+                      onClick={() => onOpen(row)}
+                      aria-label={`Open details for ${row.patient_name}`}
                       className="p-1 rounded text-on-surface-variant hover:text-primary hover:bg-surface-container-low transition-colors cursor-pointer"
                     >
-                      <span className="material-symbols-outlined text-[20px]">
+                      <span className="material-symbols-outlined text-[20px]" aria-hidden="true">
                         chevron_right
                       </span>
                     </button>

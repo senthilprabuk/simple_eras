@@ -1,104 +1,83 @@
 import React from "react";
-import { KpiResponse } from "@/lib/api";
+import type { KpiResponse } from "@/lib/api";
+import { formatDuration, quietCohort } from "@/lib/triage";
 
 interface KpiMetricsProps {
-  kpis?: KpiResponse | null;
+  kpis: KpiResponse | null;
+}
+
+function Card({
+  label,
+  icon,
+  value,
+  detail,
+  tone = "text-on-surface",
+}: {
+  label: string;
+  icon: string;
+  value: string;
+  detail: string;
+  tone?: string;
+}) {
+  return (
+    <div className="bg-surface-container-lowest p-space-md rounded-xl border border-outline-variant/30 flex flex-col justify-between shadow-xs">
+      <div className="flex items-center justify-between mb-space-xs">
+        <span className="font-label-sm text-on-surface-variant uppercase tracking-wider">{label}</span>
+        <span className="material-symbols-outlined text-[18px] text-primary" aria-hidden="true">{icon}</span>
+      </div>
+      <span className={`font-metric-tabular font-bold tracking-tight my-1 ${tone}`}>{value}</span>
+      <p className="font-body-sm text-on-surface-variant">{detail}</p>
+    </div>
+  );
 }
 
 export default function KpiMetrics({ kpis }: KpiMetricsProps) {
-  const activePatients = kpis ? kpis.active_patients : 13;
-  const openAlerts = kpis ? kpis.open_alerts : 7;
-  const ackRate = kpis ? `${kpis.ack_rate_15min.toFixed(1)}%` : "94.2%";
-  const missedCheckins = kpis ? kpis.missed_checkins_today : 1;
+  if (!kpis) {
+    return (
+      <section aria-label="Key figures" aria-busy="true" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-gutter">
+        {["Active patients", "Unresolved alerts", "Acknowledged in time", "Missed check-ins today"].map((label) => (
+          <Card key={label} label={label} icon="hourglass_empty" value="—" detail="Loading…" />
+        ))}
+      </section>
+    );
+  }
+
+  const ackWindow = formatDuration(kpis.ack_window_secs);
+  const compliance = kpis.ack_compliance_pct;
 
   return (
-    <section aria-label="Key Performance Indicators" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-gutter">
-      {/* KPI Card 1: Active Patients */}
-      <div className="bg-surface-container-lowest p-space-md rounded-xl border border-outline-variant/30 flex flex-col justify-between transition-colors hover:border-primary/40 shadow-xs">
-        <div className="flex items-center justify-between mb-space-xs">
-          <span className="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider">
-            Active Patients
-          </span>
-          <span className="material-symbols-outlined text-[18px] text-primary">personal_injury</span>
-        </div>
-        <div className="flex items-baseline gap-space-xs my-1">
-          <span className="font-metric-tabular text-metric-tabular text-on-surface font-bold tracking-tight">
-            {activePatients}
-          </span>
-          <span className="font-label-sm text-label-sm text-primary font-medium">
-            100% capacity
-          </span>
-        </div>
-        <p className="font-body-sm text-body-sm text-on-surface-variant">
-          Enrolled knee arthroplasty cohort
-        </p>
-      </div>
-
-      {/* KPI Card 2: Open Alerts */}
-      <div className="bg-surface-container-lowest p-space-md rounded-xl border border-outline-variant/30 flex flex-col justify-between transition-colors hover:border-primary/40 shadow-xs">
-        <div className="flex items-center justify-between mb-space-xs">
-          <span className="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider">
-            Open Alerts
-          </span>
-          <span className="flex h-2 w-2 relative">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-error opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-error"></span>
-          </span>
-        </div>
-        <div className="flex items-baseline gap-space-xs my-1">
-          <span className="font-metric-tabular text-metric-tabular text-error font-bold tracking-tight">
-            {openAlerts}
-          </span>
-          <span className="font-label-sm text-label-sm text-error font-medium">
-            Escalated review items
-          </span>
-        </div>
-        <p className="font-body-sm text-body-sm text-on-surface-variant">
-          Immediate attention required
-        </p>
-      </div>
-
-      {/* KPI Card 3: SLA Compliance */}
-      <div className="bg-surface-container-lowest p-space-md rounded-xl border border-outline-variant/30 flex flex-col justify-between transition-colors hover:border-primary/40 shadow-xs">
-        <div className="flex items-center justify-between mb-space-xs">
-          <span className="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider">
-            Ack &lt;15m Response
-          </span>
-          <span className="material-symbols-outlined text-[18px] text-primary">timer</span>
-        </div>
-        <div className="flex items-baseline gap-space-xs my-1">
-          <span className="font-metric-tabular text-metric-tabular text-primary font-bold tracking-tight">
-            {ackRate}
-          </span>
-          <span className="font-label-sm text-label-sm text-primary font-medium">
-            Rolling 7d compliance
-          </span>
-        </div>
-        <p className="font-body-sm text-body-sm text-on-surface-variant">
-          Target ≥90% SLA compliant
-        </p>
-      </div>
-
-      {/* KPI Card 4: Missed Check-ins */}
-      <div className="bg-surface-container-lowest p-space-md rounded-xl border border-outline-variant/30 flex flex-col justify-between transition-colors hover:border-primary/40 shadow-xs">
-        <div className="flex items-center justify-between mb-space-xs">
-          <span className="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider">
-            Missed Check-ins Today
-          </span>
-          <span className="material-symbols-outlined text-[18px] text-tertiary">schedule</span>
-        </div>
-        <div className="flex items-baseline gap-space-xs my-1">
-          <span className="font-metric-tabular text-metric-tabular text-tertiary font-bold tracking-tight">
-            {missedCheckins}
-          </span>
-          <span className="font-label-sm text-label-sm text-tertiary font-medium">
-            Overdue cadence
-          </span>
-        </div>
-        <p className="font-body-sm text-body-sm text-on-surface-variant">
-          WhatsApp check-in window elapsed
-        </p>
-      </div>
+    <section aria-label="Key figures" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-gutter">
+      <Card
+        label="Active patients"
+        icon="personal_injury"
+        value={String(kpis.active_patients)}
+        detail={`${quietCohort(kpis)} with no open alerts · ${kpis.patients_with_open_alerts} with alerts`}
+      />
+      <Card
+        label="Unresolved alerts"
+        icon="notification_important"
+        value={String(kpis.unresolved_alerts)}
+        tone={kpis.unacknowledged_alerts > 0 ? "text-error" : "text-on-surface"}
+        detail={`${kpis.unacknowledged_alerts} not yet acknowledged`}
+      />
+      <Card
+        label={`Acknowledged within ${ackWindow}`}
+        icon="timer"
+        value={compliance === null ? "—" : `${compliance.toFixed(1)}%`}
+        tone={compliance !== null && compliance < 90 ? "text-error" : "text-primary"}
+        detail={
+          kpis.ack_decided_alerts === 0
+            ? `No alerts came due in the last ${kpis.window_days} days`
+            : `Of ${kpis.ack_decided_alerts} alerts due in the last ${kpis.window_days} days`
+        }
+      />
+      <Card
+        label="Missed check-ins today"
+        icon="schedule"
+        value={String(kpis.missed_checkins_today)}
+        tone={kpis.missed_checkins_today > 0 ? "text-tertiary" : "text-on-surface"}
+        detail="Today in the hospital's own timezone"
+      />
     </section>
   );
 }
