@@ -65,6 +65,13 @@ grant update (status, acknowledged_at, acknowledged_by,
               resolved_at, resolved_by, outcome, outcome_note)
     on txn.alert to eras_app;
 
+-- enrollment
+grant insert on txn.patient, txn.patient_episode, txn.episode_baseline to eras_app;
+
+-- hospital settings and WhatsApp templates
+grant update (hospital_name, city, timezone, ack_window_secs) on meta.hospital to eras_app;
+grant select, insert, update on meta.message_template to eras_app;
+
 
 -- ---------------------------------------------------------------------
 -- Policies — every clinical row resolves to a hospital via its episode
@@ -112,6 +119,21 @@ create policy tenant_isolation on txn.alert_notification to eras_app
                         join txn.patient_episode e on e.episode_id = a.episode_id
                         where e.hospital_id = meta.current_hospital_id()));
 
+-- Hospital-owned reference rows: a tenant sees and edits only its own.
+-- Shared reference data (parameters, procedures, rulesets) stays readable.
+alter table meta.hospital           enable row level security;
+alter table meta.hospital_procedure enable row level security;
+alter table meta.message_template   enable row level security;
+
+create policy tenant_isolation on meta.hospital to eras_app
+    using (hospital_id = meta.current_hospital_id());
+
+create policy tenant_isolation on meta.hospital_procedure to eras_app
+    using (hospital_id = meta.current_hospital_id());
+
+create policy tenant_isolation on meta.message_template to eras_app
+    using (hospital_id = meta.current_hospital_id());
+
 
 -- ---------------------------------------------------------------------
 -- Migrations whose effect this baseline already contains
@@ -121,7 +143,8 @@ insert into meta.schema_migration (version, name) values
     ('001', '001_admin_user_and_fk_cleanup'),
     ('002', '002_remove_redness_parameter'),
     ('003', '003_schema_hardening'),
-    ('004', '004_row_level_security')
+    ('004', '004_row_level_security'),
+    ('005', '005_admin_screens')
 on conflict (version) do nothing;
 
 commit;

@@ -6,7 +6,7 @@
 --    db/schema/02_txn.sql
 --    db/schema/03_views.sql
 --    db/schema/04_security.sql
---    db/seed/01_reference.sql
+--    db/seed/01_reference.sql       (reference data and English message templates)
 --    db/seed/02_fixtures.sql        (optional: synthetic test patients)
 --
 --  This is the current shape of the schema, including the effect of every
@@ -266,5 +266,32 @@ create table meta.procedure_parameter (
 );
 
 create index procedure_parameter_by_param on meta.procedure_parameter (parameter_id);
+
+
+-- ---------------------------------------------------------------------
+-- message_template   (WhatsApp wording, per hospital and language)
+--   Placeholders in {braces} are validated by the API against a fixed set.
+-- ---------------------------------------------------------------------
+create table meta.message_template (
+    hospital_id    integer     not null references meta.hospital(hospital_id) on delete cascade,
+    template_key   text        not null,
+    language_code  text        not null,
+    body           text        not null,
+    is_active      boolean     not null default true,
+    updated_at     timestamptz not null default now(),
+    updated_by     uuid        references meta.admin_user(admin_user_id) on delete set null,
+
+    primary key (hospital_id, template_key, language_code),
+    constraint template_key_known
+        check (template_key in ('enrollment_welcome', 'checkin_reminder', 'missed_checkin', 'urgent_guidance')),
+    constraint template_language_known
+        check (language_code in ('en', 'ta', 'hi')),
+    -- WhatsApp's limit for a template body
+    constraint template_body_length
+        check (char_length(body) between 1 and 1024)
+);
+
+create trigger message_template_touch before update on meta.message_template
+    for each row execute function meta.set_updated_at();
 
 commit;

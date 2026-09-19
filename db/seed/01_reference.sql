@@ -153,4 +153,25 @@ on conflict (ruleset_id, parameter_id) do update set
     scoring_config   = excluded.scoring_config,
     question_text    = excluded.question_text;
 
+
+-- ---------------------------------------------------------------------
+-- WhatsApp templates — English defaults only. Tamil and Hindi are left for
+-- the hospital to write rather than machine-translating clinical guidance.
+-- ---------------------------------------------------------------------
+insert into meta.message_template (hospital_id, template_key, language_code, body)
+select h.hospital_id, t.template_key, 'en', t.body
+from meta.hospital h
+cross join (values
+    ('enrollment_welcome',
+     'Hello {patient_first_name}, this is {hospital_name}. While you recover from your knee surgery we will send you a short daily check-in here. It takes about two minutes.'),
+    ('checkin_reminder',
+     'Good morning {patient_first_name}. It is day {post_op_day} after your surgery. Please complete today''s check-in: {checkin_link}'),
+    ('missed_checkin',
+     'Hello {patient_first_name}, we have not received your check-in yet. Please complete it now so {hospital_name} can follow your recovery: {checkin_link}'),
+    ('urgent_guidance',
+     '{patient_first_name}, you reported a symptom that needs attention today. Please call {hospital_name} now. If you have chest pain or severe breathlessness, call emergency services immediately.')
+) as t(template_key, body)
+where h.hospital_code = 'CBE-01'
+on conflict do nothing;
+
 commit;
