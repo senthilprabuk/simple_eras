@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import Link from "next/link";
 import type { QueueRow, Tier } from "@/lib/api";
 import { currentAgeSecs, formatDuration, reasonText, slaFor, slaLabel } from "@/lib/triage";
 
@@ -93,7 +94,12 @@ export default function RiskQueueTable({
                   </td>
 
                   <td className="py-3.5 px-space-md">
-                    <div className="font-title-sm text-on-surface">{row.patient_name}</div>
+                    <Link
+                      href={`/patients/${row.episode_id}`}
+                      className="font-title-sm text-on-surface hover:text-primary hover:underline"
+                    >
+                      {row.patient_name}
+                    </Link>
                     <div className="font-body-sm text-on-surface-variant">
                       MRN {row.mrn ?? "not recorded"} · {row.procedure_code} · raised on POD {row.day_after_discharge}
                     </div>

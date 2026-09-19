@@ -1,7 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import Sidebar from "@/components/Sidebar";
+import React, { useCallback, useEffect, useState } from "react";
 import TopHeader from "@/components/TopHeader";
 import KpiMetrics from "@/components/KpiMetrics";
 import QueueControls from "@/components/QueueControls";
@@ -19,9 +18,8 @@ import {
   fetchHealth,
   fetchKpis,
   fetchQueue,
-  redirectToLogin,
 } from "@/lib/api";
-import { clearSession, getSessionSnapshot, loadSession, subscribeSession } from "@/lib/session";
+import { useSession } from "@/components/SessionContext";
 import { matchesSearch, tierCounts } from "@/lib/triage";
 
 const REFRESH_MS = 30_000;
@@ -53,7 +51,7 @@ function without(record: Record<string, string>, key: string): Record<string, st
 }
 
 export default function DashboardPage() {
-  const session = useSyncExternalStore(subscribeSession, getSessionSnapshot, () => null);
+  const session = useSession();
   const now = useNow(CLOCK_MS);
 
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -78,10 +76,6 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    if (!loadSession()) {
-      redirectToLogin();
-      return;
-    }
     load();
     fetchHealth().then(setHealth).catch(() => setHealth(null));
     const id = setInterval(load, REFRESH_MS);
@@ -114,20 +108,6 @@ export default function DashboardPage() {
     await load();
   };
 
-  const handleSignOut = () => {
-    clearSession();
-    // Full load so no patient data survives in memory after sign-out.
-    window.location.replace("/login");
-  };
-
-  if (!session) {
-    return (
-      <div className="min-h-screen bg-surface-bright flex items-center justify-center">
-        <span className="font-body-md text-on-surface-variant">Loading…</span>
-      </div>
-    );
-  }
-
   const items = snapshot?.queue.items ?? [];
   const counts = tierCounts(items);
   const visible = items.filter(
@@ -138,10 +118,8 @@ export default function DashboardPage() {
   const selectedRow = selected ? items.find((r) => r.alert_id === selected.alert_id) ?? selected : null;
 
   return (
-    <div className="min-h-screen bg-surface-bright text-on-surface">
-      <Sidebar fullName={session.fullName} role={session.role} onSignOut={handleSignOut} />
-
-      <div className="pl-[72px]">
+    <>
+      <div>
         <TopHeader
           hospitalName={session.hospitalName}
           fullName={session.fullName}
@@ -222,6 +200,6 @@ export default function DashboardPage() {
           onResolved={handleResolved}
         />
       )}
-    </div>
+    </>
   );
 }

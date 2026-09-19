@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { ApiError, EpisodeSummary, Outcome, QueueRow, fetchEpisodeSummary, resolveAlert } from "@/lib/api";
 import { formatReading, isConcerning, reasonText } from "@/lib/triage";
 import { TierBadge } from "@/components/RiskQueueTable";
@@ -151,13 +152,22 @@ export default function PatientDetailDrawer({ row, onClose, onResolved }: Patien
 
           {summary && (
             <>
-              <a
-                href={`tel:${summary.phone_e164}`}
-                className="self-start inline-flex items-center gap-1.5 px-3 py-1.5 border border-primary text-primary font-label-md rounded hover:bg-surface-container-low"
-              >
-                <span className="material-symbols-outlined text-[16px]" aria-hidden="true">call</span>
-                Call patient · {summary.phone_e164}
-              </a>
+              <div className="flex flex-wrap gap-space-sm">
+                <a
+                  href={`tel:${summary.phone_e164}`}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-primary text-primary font-label-md rounded hover:bg-surface-container-low"
+                >
+                  <span className="material-symbols-outlined text-[16px]" aria-hidden="true">call</span>
+                  Call patient · {summary.phone_e164}
+                </a>
+                <Link
+                  href={`/patients/${row.episode_id}`}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-outline-variant text-on-surface font-label-md rounded hover:bg-surface-container-low"
+                >
+                  <span className="material-symbols-outlined text-[16px]" aria-hidden="true">monitoring</span>
+                  Open full record
+                </Link>
+              </div>
 
               <section className="border border-outline-variant/30 rounded-xl overflow-hidden">
                 <div className="px-space-md py-space-sm bg-surface-bright/50 border-b border-outline-variant/30">

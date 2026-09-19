@@ -121,7 +121,7 @@ function describe(detail: unknown, status: number): string {
   return `Request failed (${status})`;
 }
 
-async function request<T>(path: string, init: RequestInit = {}, authenticated = true): Promise<T> {
+export async function request<T>(path: string, init: RequestInit = {}, authenticated = true): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (authenticated) {
     const session = loadSession();
@@ -148,6 +148,7 @@ async function request<T>(path: string, init: RequestInit = {}, authenticated = 
     const body = await res.json().catch(() => ({}));
     throw new ApiError(res.status, describe(body.detail, res.status), body.detail);
   }
+  if (res.status === 204) return undefined as T;
   return res.json();
 }
 

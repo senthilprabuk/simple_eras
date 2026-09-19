@@ -196,6 +196,8 @@ ORDER BY
 | **Step 10** | **Next.js Frontend Integration** | **DONE** | `frontend/src/lib/api.ts`<br>`frontend/src/app/page.tsx`<br>`backend/verify_step10.py` (Live Neon PostgreSQL & CORS) |
 | **Step 11** | **Code Review Remediation** | **DONE** | Clinician sign-in, resolve endpoint, episode summary, row-level security (`db/schema/04_security.sql`), tracked migrations (`db/migrate.py`), isolated test database (`backend/tests/conftest.py`) |
 
+| **Step 12** | **Clinician Screens** | **DONE** | Patient drilldown, patients, alerts, enrollment, rulesets, hospital, WhatsApp templates, reports, settings (`app/api/v1/*`, migration 005) |
+
 The per-step `verify_step*.py` scripts were superseded by the pytest suite in `backend/tests/` and have been removed, and `db/run_migration.py` was replaced by `db/migrate.py`. See section 6.
 
 ---
@@ -246,7 +248,7 @@ The fixtures are anchored to today, so they drift one day at a time. Re-run
 
 ### 6.3 Tests
 ```bash
-cd backend && python -m pytest        # 55 tests
+cd backend && python -m pytest        # 120 tests
 cd frontend && npm test               # unit tests (vitest)
 cd frontend && npm run lint && npx tsc --noEmit
 ```

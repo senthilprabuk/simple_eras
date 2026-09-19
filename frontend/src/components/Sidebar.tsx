@@ -2,6 +2,7 @@
 
 import React from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { initials } from "@/lib/triage";
 
 interface SidebarProps {
@@ -10,15 +11,16 @@ interface SidebarProps {
   onSignOut: () => void;
 }
 
-// Only the dashboard exists so far; the rest are placeholders for pages 2-9.
-const PLANNED_PAGES = [
-  { icon: "personal_injury", label: "Patients" },
-  { icon: "how_to_reg", label: "Enrollment" },
-  { icon: "rule_settings", label: "Rulesets" },
-  { icon: "domain", label: "Hospitals" },
-  { icon: "chat", label: "WhatsApp templates" },
-  { icon: "analytics", label: "Reports" },
-  { icon: "settings", label: "Settings" },
+const NAV = [
+  { href: "/", icon: "grid_view", label: "Dashboard" },
+  { href: "/patients", icon: "personal_injury", label: "Patients" },
+  { href: "/alerts", icon: "crisis_alert", label: "Alerts" },
+  { href: "/enrollment", icon: "how_to_reg", label: "Enrollment" },
+  { href: "/rulesets", icon: "rule_settings", label: "Rulesets" },
+  { href: "/hospitals", icon: "domain", label: "Hospitals" },
+  { href: "/templates", icon: "chat", label: "WhatsApp templates" },
+  { href: "/reports", icon: "analytics", label: "Reports" },
+  { href: "/settings", icon: "settings", label: "Settings" },
 ];
 
 function Tooltip({ children }: { children: React.ReactNode }) {
@@ -29,7 +31,13 @@ function Tooltip({ children }: { children: React.ReactNode }) {
   );
 }
 
+function isActive(pathname: string, href: string): boolean {
+  return href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
+}
+
 export default function Sidebar({ fullName, role, onSignOut }: SidebarProps) {
+  const pathname = usePathname();
+
   return (
     <aside className="fixed left-0 top-0 h-full w-[72px] bg-surface-container-lowest border-r border-outline-variant/30 z-50 flex flex-col justify-between items-center py-space-md">
       <div className="flex flex-col items-center w-full">
@@ -40,26 +48,25 @@ export default function Sidebar({ fullName, role, onSignOut }: SidebarProps) {
         </div>
 
         <nav aria-label="Main" className="flex flex-col items-center gap-space-xs w-full">
-          <Link
-            href="/"
-            aria-current="page"
-            className="group relative flex items-center justify-center w-11 h-11 rounded-lg bg-surface-container-low text-primary"
-          >
-            <span className="material-symbols-outlined text-[22px]" aria-hidden="true">grid_view</span>
-            <span className="sr-only">Dashboard</span>
-            <Tooltip>Dashboard</Tooltip>
-          </Link>
-          {PLANNED_PAGES.map((page) => (
-            <span
-              key={page.label}
-              aria-disabled="true"
-              className="group relative flex items-center justify-center w-11 h-11 rounded-lg text-outline-variant cursor-not-allowed"
-            >
-              <span className="material-symbols-outlined text-[22px]" aria-hidden="true">{page.icon}</span>
-              <span className="sr-only">{page.label} (not available yet)</span>
-              <Tooltip>{page.label} — not built yet</Tooltip>
-            </span>
-          ))}
+          {NAV.map((item) => {
+            const active = isActive(pathname, item.href);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                aria-current={active ? "page" : undefined}
+                className={`group relative flex items-center justify-center w-11 h-11 rounded-lg transition-colors ${
+                  active
+                    ? "bg-surface-container-low text-primary before:content-[''] before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:h-7 before:w-[3px] before:bg-primary before:rounded-r"
+                    : "text-on-surface-variant hover:bg-surface-container-low hover:text-primary"
+                }`}
+              >
+                <span className="material-symbols-outlined text-[22px]" aria-hidden="true">{item.icon}</span>
+                <span className="sr-only">{item.label}</span>
+                <Tooltip>{item.label}</Tooltip>
+              </Link>
+            );
+          })}
         </nav>
       </div>
 
