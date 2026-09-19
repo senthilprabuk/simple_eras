@@ -1,115 +1,74 @@
-import pytest
-from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+import asyncio
+from datetime import timedelta
+
 from sqlalchemy import text
-from app.db.session import async_session_factory
+
 from app.services.escalation import run_escalation_sweep
+from tests.conftest import isolated_session_factory
+from tests.support import create_alert, create_hospital, episode_for_mrn
 
-@pytest.mark.asyncio
-async def test_escalation_sweep_execution():
-    """Verify that run_escalation_sweep executes cleanly against the live database."""
-    # Run once
-    await run_escalation_sweep(async_session_factory)
-    # Run a second time to ensure idempotency and no unhandled concurrency errors
-    await run_escalation_sweep(async_session_factory)
 
-@pytest.mark.asyncio
-async def test_escalation_sweep_escalates_breached_alert():
-    """
-    Simulate an alert that exceeded the hospital ack SLA window (e.g. 20 minutes ago),
-    run the sweep, and verify:
-    1. alert.escalated_at is set to a non-null timestamp
-    2. notifications are inserted into txn.alert_notification
-    3. running sweep again does NOT re-escalate or duplicate notifications
-    """
-    now = datetime.now(timezone.utc)
-    twenty_mins_ago = now - timedelta(minutes=20)
+async def _escalated_at(db, alert_id):
+    return (await db.execute(text("SELECT escalated_at FROM txn.alert WHERE alert_id = :a"), {"a": alert_id})).scalar_one()
 
-    async with async_session_factory() as session:
-        # Get an existing patient and episode from Hospital 1
-        res = await session.execute(text("""
-            SELECT p.patient_id, e.episode_id, e.ruleset_id
-            FROM txn.patient p
-            JOIN txn.patient_episode e ON e.patient_id = p.patient_id
-            WHERE p.hospital_id = 1
-            LIMIT 1;
-        """))
-        row = res.mappings().first()
-        assert row is not None
 
-        patient_id = row["patient_id"]
-        episode_id = row["episode_id"]
-        ruleset_id = row["ruleset_id"]
+async def _notifications(db, alert_id):
+    return (await db.execute(
+        text("SELECT recipient, channel FROM txn.alert_notification WHERE alert_id = :a ORDER BY recipient"),
+        {"a": alert_id},
+    )).all()
 
-        # Insert check_in_evaluation
-        test_eval_id = uuid4()
-        test_alert_id = uuid4()
 
-        await session.execute(text("""
-            INSERT INTO txn.check_in_evaluation (
-                evaluation_id, episode_id, ruleset_id, day_after_discharge,
-                tier, total_score, is_override, reasons, reason_key, evaluated_at
-            ) VALUES (
-                :eid, :epid, :rsid, 4, 'critical',
-                15, true, CAST(:reasons AS jsonb), 'reason_test_sla', :t_ago
-            );
-        """), {
-            "eid": test_eval_id,
-            "epid": episode_id,
-            "rsid": ruleset_id,
-            "reasons": '[{"name": "test_sla", "score": 3, "weight": 3, "detail": "Test SLA breach trigger"}]',
-            "t_ago": twenty_mins_ago
-        })
+async def _active_admin_emails(db, hospital_id):
+    return [r[0] for r in (await db.execute(
+        text("SELECT email FROM meta.admin_user WHERE hospital_id = :h AND is_active ORDER BY email"),
+        {"h": hospital_id},
+    )).all()]
 
-        # Insert unacknowledged critical alert raised 20 mins ago
-        await session.execute(text("""
-            INSERT INTO txn.alert (
-                alert_id, episode_id, evaluation_id, tier,
-                reason_key, status, raised_at, notified_at
-            ) VALUES (
-                :aid, :epid, :eid, 'critical',
-                'reason_test_sla', 'open', :t_ago, :t_ago
-            );
-        """), {
-            "aid": test_alert_id,
-            "epid": episode_id,
-            "eid": test_eval_id,
-            "t_ago": twenty_mins_ago
-        })
-        await session.commit()
 
-    # Trigger escalation sweep
-    await run_escalation_sweep(async_session_factory)
+async def test_breached_alert_is_escalated_once_with_one_email_per_active_admin(db):
+    alert_id = await create_alert(db, await episode_for_mrn(db, "FX-01"), tier="critical",
+                                  raised_ago=timedelta(minutes=20))
 
-    # Verify alert was escalated
-    async with async_session_factory() as session:
-        res = await session.execute(text("""
-            SELECT escalated_at, status FROM txn.alert WHERE alert_id = :aid;
-        """), {"aid": test_alert_id})
-        alert_row = res.mappings().first()
-        assert alert_row is not None
-        assert alert_row["escalated_at"] is not None
+    await run_escalation_sweep(isolated_session_factory)
+    first_escalation = await _escalated_at(db, alert_id)
+    assert first_escalation is not None
 
-        # Check notifications were created
-        res = await session.execute(text("""
-            SELECT count(*) FROM txn.alert_notification WHERE alert_id = :aid;
-        """), {"aid": test_alert_id})
-        notif_count_1 = res.scalar()
-        assert notif_count_1 > 0
+    sent = await _notifications(db, alert_id)
+    assert [r.recipient for r in sent] == await _active_admin_emails(db, 1)
+    assert {r.channel for r in sent} == {"email"}
 
-    # Run sweep again (idempotency check)
-    await run_escalation_sweep(async_session_factory)
+    await run_escalation_sweep(isolated_session_factory)
+    assert await _notifications(db, alert_id) == sent
+    assert await _escalated_at(db, alert_id) == first_escalation
 
-    # Check no duplicate notifications were created
-    async with async_session_factory() as session:
-        res = await session.execute(text("""
-            SELECT count(*) FROM txn.alert_notification WHERE alert_id = :aid;
-        """), {"aid": test_alert_id})
-        notif_count_2 = res.scalar()
-        assert notif_count_1 == notif_count_2
 
-        # Cleanup test rows
-        await session.execute(text("DELETE FROM txn.alert_notification WHERE alert_id = :aid;"), {"aid": test_alert_id})
-        await session.execute(text("DELETE FROM txn.alert WHERE alert_id = :aid;"), {"aid": test_alert_id})
-        await session.execute(text("DELETE FROM txn.check_in_evaluation WHERE evaluation_id = :eid;"), {"eid": test_eval_id})
-        await session.commit()
+async def test_concurrent_sweeps_do_not_duplicate_notifications(db):
+    alert_id = await create_alert(db, await episode_for_mrn(db, "FX-01"), tier="emergency",
+                                  raised_ago=timedelta(minutes=30))
+
+    await asyncio.gather(*(run_escalation_sweep(isolated_session_factory) for _ in range(3)))
+
+    assert len(await _notifications(db, alert_id)) == len(await _active_admin_emails(db, 1))
+
+
+async def test_only_open_critical_and_emergency_alerts_past_their_window_escalate(db):
+    ep = await episode_for_mrn(db, "FX-01")
+    acknowledged = await create_alert(db, ep, tier="critical", status="acknowledged",
+                                      raised_ago=timedelta(minutes=30), acknowledged_after=timedelta(minutes=1))
+    review_tier = await create_alert(db, ep, tier="review", raised_ago=timedelta(minutes=30))
+    still_in_window = await create_alert(db, ep, tier="critical", raised_ago=timedelta(minutes=5))
+
+    await run_escalation_sweep(isolated_session_factory)
+
+    for alert_id in (acknowledged, review_tier, still_in_window):
+        assert await _escalated_at(db, alert_id) is None
+
+
+async def test_escalation_respects_each_hospitals_own_window(db):
+    h = await create_hospital(db, "ESC-HOUR", ack_window_secs=3600)
+    alert_id = await create_alert(db, h.episode_id, tier="critical", raised_ago=timedelta(minutes=20))
+
+    await run_escalation_sweep(isolated_session_factory)
+
+    assert await _escalated_at(db, alert_id) is None

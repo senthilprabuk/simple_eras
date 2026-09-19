@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Union
+from typing import List, Literal, Union
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url, URL
@@ -20,17 +20,38 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str
 
-    # Security & JWT
-    JWT_SECRET_KEY: str = "change-this-to-a-secure-random-32-byte-secret-key-in-production"
+    # Security & JWT. No default secret: a missing one must stop startup rather
+    # than fall back to a value published in the repository.
+    JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 720  # 12 hours
 
-    # Hospital defaults & Escalation timing
-    DEFAULT_ACK_WINDOW_SECS: int = 900     # 15 minutes
+    # Failed sign-ins tolerated per window, per (client, account) and per client
+    LOGIN_MAX_FAILURES_PER_ACCOUNT: int = 5
+    LOGIN_MAX_FAILURES_PER_CLIENT: int = 30
+    LOGIN_FAILURE_WINDOW_SECS: int = 900
+
+    # Background jobs
     ESCALATION_SWEEP_INTERVAL_SECS: int = 60
+    NOTIFICATION_DISPATCH_INTERVAL_SECS: int = 30
+    # "disabled" leaves escalation notifications queued and logs a warning;
+    # "log" writes each one to the application log and marks it sent.
+    NOTIFICATION_PROVIDER: Literal["disabled", "log"] = "disabled"
+
+    LOG_LEVEL: str = "INFO"
 
     # CORS
     CORS_ORIGINS: Union[str, List[str]] = "http://localhost:3000,http://127.0.0.1:3000"
+
+    @field_validator("JWT_SECRET_KEY")
+    @classmethod
+    def secret_is_strong(cls, value: str) -> str:
+        if len(value) < 32 or value.startswith("change-this"):
+            raise ValueError(
+                "JWT_SECRET_KEY must be at least 32 characters and must not be the example "
+                "placeholder. Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+            )
+        return value
 
     @property
     def cors_origins_list(self) -> List[str]:

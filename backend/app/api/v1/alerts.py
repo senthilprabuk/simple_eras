@@ -1,16 +1,34 @@
-from datetime import datetime, timezone
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.db.models.txn import Alert, PatientEpisode
 from app.core.security import get_current_admin, AuthenticatedAdmin
-from app.schemas.alert import AlertAcknowledgeResponse
+from app.schemas.alert import AlertAcknowledgeResponse, AlertResolveRequest, AlertResolveResponse
 
 router = APIRouter(prefix="/alerts", tags=["Alerts"])
+
+async def _refusal(db: AsyncSession, alert_id: UUID, hospital_id: int, action: str) -> HTTPException:
+    """
+    Explain why a guarded update touched no row. An alert in another hospital is
+    reported as missing (404), never as forbidden, so its existence is not leaked.
+    """
+    current_status = (await db.execute(
+        text("""
+            SELECT a.status FROM txn.alert a
+            JOIN txn.patient_episode e ON e.episode_id = a.episode_id
+            WHERE a.alert_id = :alert_id AND e.hospital_id = :h_id
+        """),
+        {"alert_id": alert_id, "h_id": hospital_id},
+    )).scalar_one_or_none()
+
+    if current_status is None:
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"Alert is already {current_status} and cannot be {action}",
+    )
 
 @router.post("/{alert_id}/acknowledge", response_model=AlertAcknowledgeResponse)
 async def acknowledge_alert(
@@ -19,54 +37,81 @@ async def acknowledge_alert(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Acknowledge a critical/emergency/review alert.
-    Stops the escalation timer and records the clinician identity and timestamp.
-    
-    Security & Multi-Tenancy:
-    - If alert does not exist or belongs to another hospital, returns 404 Not Found
-      (prevents tenant enumeration / leaking cross-hospital alert existence).
-    - If alert is already acknowledged or resolved, returns 409 Conflict.
+    Acknowledge an open alert, stopping its escalation timer.
+
+    The status check and the write are one statement, so when two clinicians
+    acknowledge at once exactly one succeeds and the other gets 409. Acknowledged,
+    resolved and expired alerts are all refused.
     """
-    # Query alert joining patient_episode to check hospital ownership
-    query = (
-        select(Alert)
-        .join(PatientEpisode, PatientEpisode.episode_id == Alert.episode_id)
-        .where(
-            Alert.alert_id == alert_id,
-            PatientEpisode.hospital_id == current_admin.hospital_id
-        )
-    )
+    row = (await db.execute(
+        text("""
+            UPDATE txn.alert a
+               SET status = 'acknowledged',
+                   acknowledged_at = now(),
+                   acknowledged_by = :admin_id
+              FROM txn.patient_episode e
+             WHERE a.alert_id = :alert_id
+               AND e.episode_id = a.episode_id
+               AND e.hospital_id = :h_id
+               AND a.status = 'open'
+            RETURNING a.alert_id, a.status, a.acknowledged_at, a.acknowledged_by
+        """),
+        {"alert_id": alert_id, "admin_id": current_admin.admin_user_id, "h_id": current_admin.hospital_id},
+    )).mappings().first()
 
-    result = await db.execute(query)
-    alert = result.scalar_one_or_none()
-
-    # 404 on non-existent OR cross-hospital alert
-    if not alert:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Alert not found"
-        )
-
-    # 409 Conflict if already acknowledged or resolved
-    if alert.status in ("acknowledged", "resolved"):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Alert has already been acknowledged or resolved"
-        )
-
-    now = datetime.now(timezone.utc)
-    alert.status = "acknowledged"
-    alert.acknowledged_at = now
-    alert.acknowledged_by = current_admin.admin_user_id
+    if row is None:
+        raise await _refusal(db, alert_id, current_admin.hospital_id, "acknowledged")
 
     await db.commit()
-    await db.refresh(alert)
 
     return AlertAcknowledgeResponse(
-        alert_id=alert.alert_id,
-        status=alert.status,
-        acknowledged_at=alert.acknowledged_at,
-        acknowledged_by=alert.acknowledged_by,
+        **row,
         acknowledged_by_name=current_admin.full_name,
-        message="Alert successfully acknowledged"
     )
+
+@router.post("/{alert_id}/resolve", response_model=AlertResolveResponse)
+async def resolve_alert(
+    alert_id: UUID,
+    payload: AlertResolveRequest,
+    current_admin: AuthenticatedAdmin = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Close an alert with a recorded clinical outcome.
+
+    Resolving an alert nobody acknowledged also acknowledges it at the same
+    moment, so the audit trail always shows who first responded and when.
+    """
+    row = (await db.execute(
+        text("""
+            UPDATE txn.alert a
+               SET status = 'resolved',
+                   resolved_at = now(),
+                   resolved_by = :admin_id,
+                   outcome = :outcome,
+                   outcome_note = :note,
+                   acknowledged_at = coalesce(a.acknowledged_at, now()),
+                   acknowledged_by = coalesce(a.acknowledged_by, :admin_id)
+              FROM txn.patient_episode e
+             WHERE a.alert_id = :alert_id
+               AND e.episode_id = a.episode_id
+               AND e.hospital_id = :h_id
+               AND a.status IN ('open', 'acknowledged')
+            RETURNING a.alert_id, a.status, a.outcome, a.outcome_note,
+                      a.acknowledged_at, a.resolved_at, a.resolved_by
+        """),
+        {
+            "alert_id": alert_id,
+            "admin_id": current_admin.admin_user_id,
+            "h_id": current_admin.hospital_id,
+            "outcome": payload.outcome,
+            "note": payload.note,
+        },
+    )).mappings().first()
+
+    if row is None:
+        raise await _refusal(db, alert_id, current_admin.hospital_id, "resolved")
+
+    await db.commit()
+
+    return AlertResolveResponse(**row, resolved_by_name=current_admin.full_name)

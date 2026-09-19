@@ -1,24 +1,46 @@
-import asyncio
+"""
+Every test session runs against its own throwaway database, built from
+db/schema/ and db/seed/ and dropped afterwards. Tests may therefore create and
+mutate data freely, and never touch the database named in .env.
+"""
+
 import sys
+import uuid
 from pathlib import Path
 from typing import AsyncGenerator, Dict
-from uuid import uuid4
+
+import httpx
+import psycopg
 import pytest
 import pytest_asyncio
-import httpx
-from sqlalchemy import text
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
-# Ensure backend root is in sys.path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+BACKEND = Path(__file__).resolve().parent.parent
+REPO = BACKEND.parent
+sys.path.insert(0, str(BACKEND))
 
-from app.core.config import settings
-import app.db.session as session_module
+from sqlalchemy.engine import make_url  # noqa: E402
+from app.core.config import settings  # noqa: E402
+import app.db.session as session_module  # noqa: E402
 
-# Configure NullPool during test execution so connections are not shared across event loops
+TEST_DB_NAME = f"eras_test_{uuid.uuid4().hex[:12]}"
+_configured = make_url(settings.DATABASE_URL)
+ADMIN_SYNC_URL = _configured.render_as_string(hide_password=False)
+TEST_SYNC_URL = _configured.set(database=TEST_DB_NAME).render_as_string(hide_password=False)
+
+BUILD_FILES = [
+    "db/schema/01_meta.sql",
+    "db/schema/02_txn.sql",
+    "db/schema/03_views.sql",
+    "db/schema/04_security.sql",
+    "db/seed/01_reference.sql",
+    "db/seed/02_fixtures.sql",
+]
+
+# NullPool so connections are never shared across event loops.
 test_engine = create_async_engine(
-    settings.async_database_url,
+    settings.async_database_url.set(database=TEST_DB_NAME),
     poolclass=NullPool,
     connect_args={
         "statement_cache_size": 0,
@@ -26,101 +48,88 @@ test_engine = create_async_engine(
         "ssl": "require",
     },
 )
-test_session_factory = async_sessionmaker(
+isolated_session_factory = async_sessionmaker(
     bind=test_engine,
     class_=AsyncSession,
     expire_on_commit=False,
     autoflush=False,
 )
+
+# Patch before importing the app, so modules that bind the factory at import time get this one.
 session_module.async_engine = test_engine
-session_module.async_session_factory = test_session_factory
+session_module.async_session_factory = isolated_session_factory
 
-# Also import app after patching db session
-from app.main import app
-from app.core.security import get_password_hash
+from app.main import app  # noqa: E402
+from app.core.login_throttle import login_throttle  # noqa: E402
+from seed.seed_demo import seed_demo  # noqa: E402
+from tests.support import create_hospital  # noqa: E402
 
-H2_EMAIL = "admin.h2@testmetro.org"
-H2_PASSWORD = "password123"
+NURSE = ("nurse.sarah@stmarys.org", "password123")
+SURGEON = ("dr.mehta@stmarys.org", "password123")
+
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
-async def setup_test_multi_tenant_fixtures():
-    """
-    Ensure Hospital 2 exists in meta.hospital and an active admin exists in meta.admin_user
-    so cross-tenant isolation can be authentically validated.
-    """
-    async with session_module.async_session_factory() as session:
-        # Check / Insert Hospital 2 using identity sequence
-        res = await session.execute(text("""
-            INSERT INTO meta.hospital (
-                hospital_code, hospital_name, city, timezone, ack_window_secs
-            ) VALUES (
-                'TEST-02', 'Test Metro Hospital', 'Coimbatore', 'Asia/Kolkata', 900
-            )
-            ON CONFLICT (hospital_code) DO UPDATE
-            SET hospital_name = EXCLUDED.hospital_name
-            RETURNING hospital_id;
-        """))
-        h2_id = res.scalar()
-        if not h2_id:
-            res = await session.execute(text("SELECT hospital_id FROM meta.hospital WHERE hospital_code = 'TEST-02';"))
-            h2_id = res.scalar()
+async def test_database():
+    with psycopg.connect(ADMIN_SYNC_URL, autocommit=True) as admin:
+        admin.execute(f'CREATE DATABASE "{TEST_DB_NAME}"')
+    try:
+        with psycopg.connect(TEST_SYNC_URL, autocommit=True) as conn:
+            for rel in BUILD_FILES:
+                conn.execute((REPO / rel).read_text(encoding="utf-8"))
+        await seed_demo(isolated_session_factory)
+        yield
+    finally:
+        await test_engine.dispose()
+        with psycopg.connect(ADMIN_SYNC_URL, autocommit=True) as admin:
+            admin.execute(f'DROP DATABASE IF EXISTS "{TEST_DB_NAME}" WITH (FORCE)')
 
-        # Check / Insert Admin for Hospital 2
-        hashed = get_password_hash(H2_PASSWORD)
-        await session.execute(text("""
-            INSERT INTO meta.admin_user (
-                admin_user_id, hospital_id, email, hashed_password, full_name, role, is_active
-            ) VALUES (
-                :aid, :hid, :email, :pwd, 'Test Hospital 2 Admin', 'admin', true
-            )
-            ON CONFLICT (hospital_id, email) DO UPDATE
-            SET hashed_password = EXCLUDED.hashed_password, is_active = true;
-        """), {
-            "aid": uuid4(),
-            "hid": h2_id,
-            "email": H2_EMAIL,
-            "pwd": hashed
-        })
-        await session.commit()
+
+@pytest.fixture(autouse=True)
+def reset_login_throttle():
+    login_throttle.clear()
+    yield
+    login_throttle.clear()
+
+
+@pytest_asyncio.fixture
+async def db() -> AsyncGenerator[AsyncSession, None]:
+    """A session as the connecting role: sees every hospital, like the system jobs."""
+    async with isolated_session_factory() as session:
+        yield session
+
 
 @pytest_asyncio.fixture
 async def client() -> AsyncGenerator[httpx.AsyncClient, None]:
-    """Provides an async HTTP client connected directly to the FastAPI app."""
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
-        base_url="http://test"
-    ) as ac:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
+
+
+async def login_headers(client: httpx.AsyncClient, email: str, password: str, hospital_id=None) -> Dict[str, str]:
+    body = {"email": email, "password": password}
+    if hospital_id is not None:
+        body["hospital_id"] = hospital_id
+    res = await client.post("/api/v1/auth/login", json=body)
+    assert res.status_code == 200, f"login failed for {email}: {res.text}"
+    return {"Authorization": f"Bearer {res.json()['access_token']}"}
+
 
 @pytest_asyncio.fixture
 async def nurse_headers(client: httpx.AsyncClient) -> Dict[str, str]:
-    """Authenticates Nurse Sarah (Hospital 1) and returns authorization headers."""
-    res = await client.post("/api/v1/auth/login", json={
-        "email": "nurse.sarah@stmarys.org",
-        "password": "password123"
-    })
-    assert res.status_code == 200, f"Nurse login failed: {res.text}"
-    token = res.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
+    return await login_headers(client, *NURSE)
+
 
 @pytest_asyncio.fixture
 async def surgeon_headers(client: httpx.AsyncClient) -> Dict[str, str]:
-    """Authenticates Dr. Mehta (Hospital 1) and returns authorization headers."""
-    res = await client.post("/api/v1/auth/login", json={
-        "email": "dr.mehta@stmarys.org",
-        "password": "password123"
-    })
-    assert res.status_code == 200, f"Surgeon login failed: {res.text}"
-    token = res.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
+    return await login_headers(client, *SURGEON)
+
+
+@pytest_asyncio.fixture(scope="session")
+async def second_hospital():
+    """A second tenant with one admin and one patient, for isolation tests."""
+    async with isolated_session_factory() as session:
+        return await create_hospital(session, "TEST-02")
+
 
 @pytest_asyncio.fixture
-async def h2_headers(client: httpx.AsyncClient) -> Dict[str, str]:
-    """Authenticates Admin for Hospital 2 and returns authorization headers."""
-    res = await client.post("/api/v1/auth/login", json={
-        "email": H2_EMAIL,
-        "password": H2_PASSWORD
-    })
-    assert res.status_code == 200, f"H2 admin login failed: {res.text}"
-    token = res.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
+async def h2_headers(client: httpx.AsyncClient, second_hospital) -> Dict[str, str]:
+    return await login_headers(client, second_hospital.email, second_hospital.password)

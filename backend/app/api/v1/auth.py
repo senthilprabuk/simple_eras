@@ -1,79 +1,95 @@
-from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
-from app.db.session import get_db
+from app.core.config import settings
+from app.core.login_throttle import login_throttle
+from app.core.security import burn_password_check, create_access_token, verify_password
 from app.db.models.meta import AdminUser
+from app.db.session import get_db
 from app.schemas.auth import LoginRequest, TokenResponse
-from app.core.security import verify_password, create_access_token
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+def _invalid_credentials() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid email or password",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 @router.post("/login", response_model=TokenResponse)
 async def login(
     req: LoginRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Authenticate hospital admin and return signed JWT access token.
-    Supports optional hospital_id disambiguation when the same email
-    exists across multiple hospital tenants.
+    Authenticate a hospital admin and return a signed JWT.
+
+    Unknown, inactive and wrong-password sign-ins get the same 401, and every
+    attempt performs at least one bcrypt check, so neither the message nor the
+    timing reveals whether an account exists.
     """
-    # Build query
-    query = select(AdminUser).where(AdminUser.email == req.email)
+    client = request.client.host if request.client else "unknown"
+    if login_throttle.is_blocked(client, req.email):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed sign-in attempts. Try again later.",
+        )
+
+    query = select(AdminUser).where(AdminUser.email == req.email, AdminUser.is_active.is_(True))
     if req.hospital_id is not None:
         query = query.where(AdminUser.hospital_id == req.hospital_id)
+    candidates = list((await db.execute(query)).scalars().all())
 
-    result = await db.execute(query)
-    admins: List[AdminUser] = list(result.scalars().all())
+    if candidates:
+        matched = [
+            admin for admin in candidates
+            if await run_in_threadpool(verify_password, req.password, admin.hashed_password)
+        ]
+    else:
+        await run_in_threadpool(burn_password_check, req.password)
+        matched = []
 
-    # Handle multi-hospital email disambiguation
-    if len(admins) > 1 and req.hospital_id is None:
+    if not matched:
+        login_throttle.record_failure(client, req.email)
+        raise _invalid_credentials()
+
+    hospitals = (await db.execute(
+        text("""
+            SELECT hospital_id, hospital_name FROM meta.hospital
+            WHERE hospital_id = ANY(:ids) ORDER BY hospital_name
+        """),
+        {"ids": [admin.hospital_id for admin in matched]},
+    )).mappings().all()
+
+    if len(matched) > 1:
+        # Only reachable with a correct password, so it tells a guesser nothing.
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Multiple hospital accounts found for this email. Please provide hospital_id."
+            detail={
+                "message": "This account exists at more than one hospital. Choose one to sign in.",
+                "hospitals": [dict(h) for h in hospitals],
+            },
         )
 
-    if not admins:
-        # Generic message to avoid email enumeration
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
-            headers={"WWW-Authenticate": "Bearer"}
-        )
-
-    admin = admins[0]
-
-    # Verify active status
-    if not admin.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Account is inactive. Please contact administrator.",
-            headers={"WWW-Authenticate": "Bearer"}
-        )
-
-    # Verify password
-    if not verify_password(req.password, admin.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
-            headers={"WWW-Authenticate": "Bearer"}
-        )
-
-    # Issue token with tenant claims
-    token_data = {
+    login_throttle.record_success(client, req.email)
+    admin = matched[0]
+    access_token = create_access_token(data={
         "sub": str(admin.admin_user_id),
         "hospital_id": admin.hospital_id,
-        "role": admin.role
-    }
-    access_token = create_access_token(data=token_data)
+        "role": admin.role,
+    })
 
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         admin_user_id=admin.admin_user_id,
         hospital_id=admin.hospital_id,
+        hospital_name=hospitals[0]["hospital_name"],
         full_name=admin.full_name,
-        role=admin.role
+        role=admin.role,
     )

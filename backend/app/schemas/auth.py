@@ -1,15 +1,16 @@
 from typing import Optional
 from uuid import UUID
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 class LoginRequest(BaseModel):
     """
     Credentials for hospital admin login.
     hospital_id is optional and serves as a disambiguator when the same email
-    exists across multiple hospitals.
+    and password are registered at more than one hospital.
     """
-    email: str = Field(..., description="Admin user email address")
-    password: str = Field(..., min_length=6, description="Admin password")
+    email: str = Field(..., max_length=320, description="Admin user email address")
+    # bcrypt only reads the first 72 bytes; the cap stops oversized payloads.
+    password: str = Field(..., min_length=1, max_length=256, description="Admin password")
     hospital_id: Optional[int] = Field(None, description="Optional hospital ID to disambiguate email")
 
     @field_validator("email")
@@ -24,7 +25,9 @@ class TokenResponse(BaseModel):
     """JWT response after successful login."""
     access_token: str
     token_type: str = "bearer"
+    expires_in: int = Field(..., description="Token lifetime in seconds")
     admin_user_id: UUID
     hospital_id: int
+    hospital_name: str
     full_name: str
     role: str

@@ -1,4 +1,3 @@
-from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,130 +10,119 @@ router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
 @router.get("/queue", response_model=QueueResponse)
 async def get_queue(
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     current_admin: AuthenticatedAdmin = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Fetch prioritized clinical risk queue for the authenticated admin's hospital.
-    Ordering is pre-sorted server-side by txn.v_alert_queue:
-    Severity tier (emergency > critical > review > missed), then raised_at ASC.
-    NOTE: Numeric evaluation scores are strictly excluded from response.
+    The hospital's unresolved alerts: most severe tier first, then oldest first.
+    The ordering is applied here because a view's own ORDER BY is not guaranteed
+    to survive an outer query; alert_id breaks ties so pages are stable.
     """
-    stmt = text("""
-        SELECT 
-            alert_id,
-            patient_id,
-            patient_name,
-            mrn,
-            episode_id,
-            hospital_id,
-            hospital_name,
-            procedure_code,
-            day_after_discharge,
-            tier,
-            reasons,
-            raised_at,
-            age_secs,
-            acknowledged,
-            acknowledged_at,
-            acknowledged_by_name
-        FROM txn.v_alert_queue
-        WHERE hospital_id = :h_id;
-    """)
+    params = {"h_id": current_admin.hospital_id}
 
-    result = await db.execute(stmt, {"h_id": current_admin.hospital_id})
-    rows = result.mappings().all()
+    total = (await db.execute(
+        text("SELECT count(*) FROM txn.v_alert_queue WHERE hospital_id = :h_id"), params
+    )).scalar_one()
 
-    items: List[QueueRow] = []
-    for r in rows:
-        items.append(QueueRow(
-            alert_id=r["alert_id"],
-            patient_id=r["patient_id"],
-            patient_name=r["patient_name"],
-            mrn=r["mrn"],
-            episode_id=r["episode_id"],
-            hospital_id=r["hospital_id"],
-            hospital_name=r["hospital_name"],
-            procedure_code=r["procedure_code"],
-            day_after_discharge=r["day_after_discharge"],
-            tier=r["tier"],
-            reasons=r["reasons"] if isinstance(r["reasons"], list) else [],
-            raised_at=r["raised_at"],
-            age_secs=r["age_secs"],
-            acknowledged=bool(r["acknowledged"]),
-            acknowledged_at=r["acknowledged_at"],
-            acknowledged_by_name=r["acknowledged_by_name"]
-        ))
+    rows = (await db.execute(
+        text("""
+            SELECT
+                alert_id, patient_id, patient_name, mrn, episode_id, hospital_id,
+                hospital_name, procedure_code, day_after_discharge, tier, reasons,
+                raised_at, age_secs, acknowledged, acknowledged_at,
+                acknowledged_by_name, ack_window_secs
+            FROM txn.v_alert_queue
+            WHERE hospital_id = :h_id
+            ORDER BY
+                CASE tier
+                    WHEN 'emergency' THEN 1
+                    WHEN 'critical'  THEN 2
+                    WHEN 'review'    THEN 3
+                    WHEN 'missed'    THEN 4
+                    ELSE 5
+                END,
+                raised_at,
+                alert_id
+            LIMIT :limit OFFSET :offset
+        """),
+        {**params, "limit": limit, "offset": offset},
+    )).mappings().all()
 
-    return QueueResponse(items=items, total=len(items))
+    return QueueResponse(
+        items=[QueueRow.model_validate(dict(r)) for r in rows],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 @router.get("/kpis", response_model=KpiResponse)
 async def get_kpis(
-    window_days: int = Query(7, ge=1, le=90, description="Rolling window in days for SLA compliance rate"),
+    window_days: int = Query(7, ge=1, le=90, description="Rolling window in days for SLA compliance"),
     current_admin: AuthenticatedAdmin = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Compute Key Performance Indicators for the Page 1 dashboard cards,
-    strictly scoped to the caller's hospital_id:
-    1. active_patients
-    2. open_alerts
-    3. ack_rate_15min (% acknowledged within 15m window)
-    4. missed_checkins_today
-    """
-    h_id = current_admin.hospital_id
+    """Dashboard header figures, scoped to the caller's hospital and its own SLA and timezone."""
+    params = {"h_id": current_admin.hospital_id, "days": window_days}
 
-    # 1. Active Patients
-    active_patients_stmt = text("""
-        SELECT count(*) FROM txn.patient_episode
-        WHERE hospital_id = :h_id AND status = 'active';
-    """)
-    res = await db.execute(active_patients_stmt, {"h_id": h_id})
-    active_patients = res.scalar() or 0
+    ack_window_secs = (await db.execute(
+        text("SELECT ack_window_secs FROM meta.hospital WHERE hospital_id = :h_id"), params
+    )).scalar_one()
 
-    # 2. Open Alerts
-    open_alerts_stmt = text("""
-        SELECT count(*) FROM txn.alert a
-        JOIN txn.patient_episode e ON e.episode_id = a.episode_id
-        WHERE e.hospital_id = :h_id AND a.status IN ('open', 'acknowledged');
-    """)
-    res = await db.execute(open_alerts_stmt, {"h_id": h_id})
-    open_alerts = res.scalar() or 0
-
-    # 3. Ack Rate (<15 mins) over rolling window
-    ack_rate_stmt = text("""
-        SELECT 
-            CASE 
-                WHEN count(*) = 0 THEN 100.0
-                ELSE ROUND(
-                    (count(*) FILTER (WHERE EXTRACT(epoch FROM (a.acknowledged_at - a.raised_at)) <= 900) * 100.0) / count(*),
-                    1
-                )
-            END AS ack_rate
+    census = (await db.execute(text("""
+        SELECT
+            (SELECT count(*) FROM txn.patient_episode
+             WHERE hospital_id = :h_id AND status = 'active')            AS active_patients,
+            count(DISTINCT a.episode_id) FILTER (WHERE e.status = 'active') AS patients_with_open_alerts,
+            count(*)                                                     AS unresolved_alerts,
+            count(*) FILTER (WHERE a.status = 'open')                    AS unacknowledged_alerts
         FROM txn.alert a
         JOIN txn.patient_episode e ON e.episode_id = a.episode_id
         WHERE e.hospital_id = :h_id
-          AND a.acknowledged_at IS NOT NULL
-          AND a.raised_at >= (now() - (make_interval(days => :days)));
-    """)
-    res = await db.execute(ack_rate_stmt, {"h_id": h_id, "days": window_days})
-    ack_rate = float(res.scalar() or 100.0)
+          AND a.status IN ('open', 'acknowledged')
+    """), params)).mappings().one()
 
-    # 4. Missed Check-ins Today
-    missed_stmt = text("""
-        SELECT count(*) FROM txn.check_in_evaluation ev
+    # An alert has a verdict once it is acknowledged or its deadline has passed.
+    # Alerts still inside their window are left out rather than counted as met.
+    ack = (await db.execute(text("""
+        SELECT
+            count(*) FILTER (
+                WHERE a.acknowledged_at <= a.raised_at + make_interval(secs => h.ack_window_secs)
+            ) AS met,
+            count(*) FILTER (
+                WHERE a.acknowledged_at IS NOT NULL
+                   OR now() > a.raised_at + make_interval(secs => h.ack_window_secs)
+            ) AS decided
+        FROM txn.alert a
+        JOIN txn.patient_episode e ON e.episode_id = a.episode_id
+        JOIN meta.hospital h       ON h.hospital_id = e.hospital_id
+        WHERE e.hospital_id = :h_id
+          AND a.raised_at >= now() - make_interval(days => :days)
+    """), params)).mappings().one()
+
+    # "Today" is the hospital's calendar day, not the database server's.
+    missed_checkins = (await db.execute(text("""
+        SELECT count(*)
+        FROM txn.check_in_evaluation ev
         JOIN txn.patient_episode e ON e.episode_id = ev.episode_id
+        JOIN meta.hospital h       ON h.hospital_id = e.hospital_id
         WHERE e.hospital_id = :h_id
           AND ev.tier = 'missed'
-          AND ev.evaluated_at::date = CURRENT_DATE;
-    """)
-    res = await db.execute(missed_stmt, {"h_id": h_id})
-    missed_checkins = res.scalar() or 0
+          AND ev.evaluated_at >= date_trunc('day', now() AT TIME ZONE h.timezone) AT TIME ZONE h.timezone
+          AND ev.evaluated_at <  (date_trunc('day', now() AT TIME ZONE h.timezone) + interval '1 day')
+                                  AT TIME ZONE h.timezone
+    """), params)).scalar_one()
 
+    decided = ack["decided"]
     return KpiResponse(
-        active_patients=active_patients,
-        open_alerts=open_alerts,
-        ack_rate_15min=ack_rate,
+        active_patients=census["active_patients"],
+        patients_with_open_alerts=census["patients_with_open_alerts"],
+        unresolved_alerts=census["unresolved_alerts"],
+        unacknowledged_alerts=census["unacknowledged_alerts"],
+        ack_compliance_pct=round(ack["met"] * 100.0 / decided, 1) if decided else None,
+        ack_decided_alerts=decided,
+        ack_window_secs=ack_window_secs,
         missed_checkins_today=missed_checkins,
-        window_days=window_days
+        window_days=window_days,
     )

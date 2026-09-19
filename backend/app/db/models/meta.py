@@ -3,7 +3,6 @@ from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
 from sqlalchemy import (
-    Column,
     Integer,
     SmallInteger,
     Text,

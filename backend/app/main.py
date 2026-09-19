@@ -1,59 +1,63 @@
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.core.config import settings
+from app.core.logging_config import configure_logging
 from app.api.v1 import api_v1_router
 from app.services.escalation import run_escalation_sweep
+from app.services.notifications import dispatch_queued_notifications
 
-# In-process asynchronous scheduler for background tasks
+configure_logging(settings.LOG_LEVEL)
+logger = logging.getLogger("eras")
+
 scheduler = AsyncIOScheduler()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    FastAPI lifespan manager.
-    Startup: Launches APScheduler for the 60-second automated escalation sweep.
-    Shutdown: Shuts down background scheduler and connection pools cleanly.
-    """
-    print(f"[*] Starting ERAS Clinical Monitoring API...")
-    print(f"[*] CORS Allowed Origins: {settings.cors_origins_list}")
-
-    # Launch escalation sweep scheduler
+    # max_instances=1 stops a slow tick overlapping the next one in this process;
+    # the sweep's advisory lock covers other processes.
     scheduler.add_job(
-        run_escalation_sweep,
-        "interval",
+        run_escalation_sweep, "interval",
         seconds=settings.ESCALATION_SWEEP_INTERVAL_SECS,
-        id="escalation_sweep",
-        replace_existing=True
+        id="escalation_sweep", replace_existing=True, max_instances=1, coalesce=True,
+    )
+    scheduler.add_job(
+        dispatch_queued_notifications, "interval",
+        seconds=settings.NOTIFICATION_DISPATCH_INTERVAL_SECS,
+        id="notification_dispatch", replace_existing=True, max_instances=1, coalesce=True,
     )
     scheduler.start()
-    print(f"[+] APScheduler started: {settings.ESCALATION_SWEEP_INTERVAL_SECS}s escalation sweep active.")
+    logger.info(
+        "Started: escalation sweep every %ss, notification dispatch every %ss (provider: %s). CORS origins: %s",
+        settings.ESCALATION_SWEEP_INTERVAL_SECS,
+        settings.NOTIFICATION_DISPATCH_INTERVAL_SECS,
+        settings.NOTIFICATION_PROVIDER,
+        settings.cors_origins_list,
+    )
 
     yield
 
-    print(f"[*] Shutting down ERAS Clinical Monitoring API...")
     scheduler.shutdown(wait=False)
-    print(f"[+] APScheduler stopped cleanly.")
+    logger.info("Scheduler stopped.")
 
 app = FastAPI(
     title="ERAS Clinical Monitoring API",
-    version="0.1.0",
-    description="Post-Operative Remote Patient Monitoring Backend for Knee Replacement (Page 1: Dashboard / Risk Queue)",
+    version="0.2.0",
+    description="Post-Operative Remote Patient Monitoring Backend for Knee Replacement",
     lifespan=lifespan
 )
 
-# Configure CORS for Next.js frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
-# Mount API routers
 app.include_router(api_v1_router)
 
 @app.get("/health", tags=["System"])
@@ -62,10 +66,11 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "eras-backend",
-        "version": "0.1.0",
-        "scheduler_running": scheduler.running
+        "version": app.version,
+        "scheduler_running": scheduler.running,
+        "notification_provider": settings.NOTIFICATION_PROVIDER,
     }
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True)

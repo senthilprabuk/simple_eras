@@ -1,4 +1,5 @@
 from typing import AsyncGenerator
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from app.core.config import settings
 
@@ -27,15 +28,22 @@ async_session_factory = async_sessionmaker(
 )
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """
-    FastAPI dependency yielding an async database session per request.
-    Ensures rollback on error and clean closure upon completion.
-    """
+    """FastAPI dependency yielding one session per request, rolled back on error."""
     async with async_session_factory() as session:
         try:
             yield session
         except Exception:
             await session.rollback()
             raise
-        finally:
-            await session.close()
+
+async def scope_to_hospital(session: AsyncSession, hospital_id: int) -> None:
+    """
+    Restrict the rest of this transaction to one hospital's rows via row-level
+    security (db/schema/04_security.sql). Both settings are transaction-local, so
+    they end at commit: a tenant endpoint must not query after committing.
+    """
+    await session.execute(text("set local role eras_app"))
+    await session.execute(
+        text("select set_config('app.hospital_id', :hospital_id, true)"),
+        {"hospital_id": str(hospital_id)},
+    )
