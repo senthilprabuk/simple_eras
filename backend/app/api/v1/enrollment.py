@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import time, timedelta
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,6 +11,7 @@ from app.db.session import get_db
 from app.schemas.checkin import OrdinalOption
 from app.schemas.enrollment import (
     BaselineParameter,
+    CheckInWindow,
     EnrollmentOptions,
     EnrollmentProcedure,
     EnrollmentRequest,
@@ -19,8 +20,15 @@ from app.schemas.enrollment import (
 
 router = APIRouter(prefix="/enrollment", tags=["Enrollment"])
 
-# Discharge readings the rules engine compares later check-ins against.
-BASELINE_CODES = ["temp_c", "hr", "spo2", "pain", "knee_bend", "walk_aid"]
+# Recorded at discharge: body measurements first, then the readings the
+# rules engine compares later check-ins against.
+BASELINE_CODES = ["height_cm", "weight_kg", "bp_sys", "bp_dia", "temp_c", "hr", "spo2", "pain", "knee_bend", "walk_aid"]
+
+CHECKIN_WINDOWS = [
+    CheckInWindow(code="morning", label="Morning", start=time(8), end=time(10)),
+    CheckInWindow(code="midday", label="Midday", start=time(12), end=time(14)),
+    CheckInWindow(code="evening", label="Evening", start=time(17), end=time(19)),
+]
 
 async def _baseline_parameters(db: AsyncSession) -> List[BaselineParameter]:
     rows = (await db.execute(text("""
@@ -71,15 +79,17 @@ async def enrollment_options(
         ORDER BY sp.procedure_name
     """), {"h_id": current_admin.hospital_id})).mappings().all()
 
-    today = (await db.execute(text(
-        "SELECT (now() AT TIME ZONE timezone)::date FROM meta.hospital WHERE hospital_id = :h_id"
-    ), {"h_id": current_admin.hospital_id})).scalar_one()
+    hospital = (await db.execute(text(
+        "SELECT (now() AT TIME ZONE timezone)::date AS today, privacy_law FROM meta.hospital WHERE hospital_id = :h_id"
+    ), {"h_id": current_admin.hospital_id})).mappings().one()
 
     return EnrollmentOptions(
         procedures=[EnrollmentProcedure(**p) for p in procedures],
         languages=["en", "ta", "hi"],
         baseline_parameters=await _baseline_parameters(db),
-        today=today,
+        checkin_windows=CHECKIN_WINDOWS,
+        privacy_law=hospital["privacy_law"],
+        today=hospital["today"],
     )
 
 @router.post("", response_model=EnrollmentResponse, status_code=status.HTTP_201_CREATED)
@@ -92,16 +102,19 @@ async def enroll_patient(
     Start monitoring a patient after surgery. An MRN already registered here is
     treated as a returning patient (a second surgery) only if the name matches;
     otherwise it is refused, since a mistyped MRN would merge two people's records.
+    A returning patient's details and emergency contacts are replaced with the
+    ones just collected; optional details left blank keep their earlier value.
     """
     h_id = current_admin.hospital_id
 
     procedure = (await db.execute(text("""
-        SELECT sp.procedure_id, sp.observation_days, r.ruleset_id,
-               (SELECT (now() AT TIME ZONE h.timezone)::date FROM meta.hospital h WHERE h.hospital_id = :h_id) AS today
-        FROM meta.hospital_procedure hp
+        SELECT sp.procedure_id, sp.observation_days, r.ruleset_id, h.privacy_law,
+               (now() AT TIME ZONE h.timezone)::date AS today
+        FROM meta.hospital h
+        JOIN meta.hospital_procedure hp ON hp.hospital_id = h.hospital_id
         JOIN meta.surgical_procedure sp ON sp.procedure_id = hp.procedure_id
         JOIN meta.ruleset r ON r.procedure_id = sp.procedure_id AND r.status = 'approved'
-        WHERE hp.hospital_id = :h_id AND hp.is_active AND sp.is_active AND sp.procedure_code = :code
+        WHERE h.hospital_id = :h_id AND hp.is_active AND sp.is_active AND sp.procedure_code = :code
     """), {"h_id": h_id, "code": req.procedure_code})).mappings().first()
 
     if procedure is None:
@@ -127,6 +140,18 @@ async def enroll_patient(
                 )
             baseline_rows.append({"code": code, "num": round(float(value), param.decimals), "code_value": None})
 
+    recorded = {row["code"]: row["num"] for row in baseline_rows}
+    if "bp_sys" in recorded and "bp_dia" in recorded and recorded["bp_sys"] <= recorded["bp_dia"]:
+        raise HTTPException(422, detail="Systolic blood pressure must be higher than diastolic")
+
+    window = next(w for w in CHECKIN_WINDOWS if w.code == req.checkin_window)
+    details = {
+        "phone": req.phone_e164, "lang": req.language_code, "dob": req.date_of_birth, "gender": req.gender,
+        "line": req.address.line, "city": req.address.city, "district": req.address.district,
+        "state": req.address.state, "postal": req.address.postal_code,
+        "alt_phone": req.alt_phone_e164, "email": req.email,
+    }
+
     existing = (await db.execute(text("""
         SELECT patient_id, patient_name,
                EXISTS (SELECT 1 FROM txn.patient_episode e
@@ -146,29 +171,63 @@ async def enroll_patient(
     try:
         if existing:
             patient_id = existing["patient_id"]
+            await db.execute(text("""
+                UPDATE txn.patient
+                   SET phone_e164 = :phone, language_code = :lang, gender = :gender,
+                       date_of_birth = coalesce(:dob, date_of_birth),
+                       address_line = :line, address_city = coalesce(:city, address_city),
+                       address_district = :district, address_state = coalesce(:state, address_state),
+                       address_postal_code = :postal,
+                       alt_phone_e164 = coalesce(:alt_phone, alt_phone_e164), email = coalesce(:email, email)
+                 WHERE patient_id = :patient_id
+            """), {"patient_id": patient_id, **details})
+            await db.execute(text("DELETE FROM txn.patient_contact WHERE patient_id = :patient_id"),
+                             {"patient_id": patient_id})
         else:
             patient_id = (await db.execute(text("""
-                INSERT INTO txn.patient (hospital_id, mrn, patient_name, phone_e164, language_code, date_of_birth)
-                VALUES (:h_id, :mrn, :name, :phone, :lang, :dob)
+                INSERT INTO txn.patient
+                    (hospital_id, mrn, patient_name, phone_e164, language_code, date_of_birth, gender,
+                     address_line, address_city, address_district, address_state, address_postal_code,
+                     alt_phone_e164, email)
+                VALUES (:h_id, :mrn, :name, :phone, :lang, :dob, :gender,
+                        :line, :city, :district, :state, :postal, :alt_phone, :email)
                 RETURNING patient_id
-            """), {
-                "h_id": h_id, "mrn": req.mrn, "name": req.patient_name, "phone": req.phone_e164,
-                "lang": req.language_code, "dob": req.date_of_birth,
-            })).scalar_one()
+            """), {"h_id": h_id, "mrn": req.mrn, "name": req.patient_name, **details})).scalar_one()
+
+        await db.execute(text("""
+            INSERT INTO txn.patient_contact (patient_id, priority, contact_name, relationship, phone_e164)
+            VALUES (:patient_id, :priority, :name, :relationship, :phone)
+        """), [
+            {"patient_id": patient_id, "priority": priority, "name": c.name,
+             "relationship": c.relationship, "phone": c.phone_e164}
+            for priority, c in enumerate(req.emergency_contacts, start=1)
+        ])
 
         monitoring_ends_on = req.discharge_date + timedelta(days=procedure["observation_days"])
         episode_id = (await db.execute(text("""
             INSERT INTO txn.patient_episode
                 (patient_id, hospital_id, procedure_id, ruleset_id, surgery_date, discharge_date,
-                 monitoring_ends_on, consent_version, consent_at, enrolled_by, status)
+                 monitoring_ends_on, consent_version, consent_at, enrolled_by, status,
+                 checkin_window_start, checkin_window_end)
             VALUES (:patient_id, :h_id, :procedure_id, :ruleset_id, :surgery, :discharge,
-                    :ends, :consent, now(), :admin_id, 'active')
+                    :ends, :consent, now(), :admin_id, 'active', :window_start, :window_end)
             RETURNING episode_id
         """), {
             "patient_id": patient_id, "h_id": h_id, "procedure_id": procedure["procedure_id"],
             "ruleset_id": procedure["ruleset_id"], "surgery": req.surgery_date, "discharge": req.discharge_date,
             "ends": monitoring_ends_on, "consent": req.consent_version, "admin_id": current_admin.admin_user_id,
+            "window_start": window.start, "window_end": window.end,
         })).scalar_one()
+
+        await db.execute(text("""
+            INSERT INTO txn.episode_consent (episode_id, consent_code, granted, privacy_law, form_version, recorded_by)
+            VALUES (:episode_id, :code, :granted, :law, :version, :admin_id)
+        """), [
+            {"episode_id": episode_id, "code": code, "granted": granted, "law": procedure["privacy_law"],
+             "version": req.consent_version, "admin_id": current_admin.admin_user_id}
+            for code, granted in (("remote_monitoring", True), ("data_processing", True),
+                                  ("contact_sharing", req.contact_sharing_consent))
+        ])
 
         if baseline_rows:
             await db.execute(text("""

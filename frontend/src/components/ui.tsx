@@ -1,27 +1,45 @@
 "use client";
 
 import React from "react";
+import AccountBlock from "@/components/AccountBlock";
 import { useSession } from "@/components/SessionContext";
 
-/** Fixed top bar matching the dashboard's, for every screen other than the dashboard. */
-export function PageHeader({ title, actions }: { title: string; actions?: React.ReactNode }) {
-  const session = useSession();
+/** The fixed top bar: screen title, where the user is working, and their account. */
+export function HeaderBar({
+  title,
+  place,
+  placeIcon,
+  fullName,
+  actions,
+}: {
+  title: string;
+  place: string;
+  placeIcon: string;
+  fullName: string;
+  actions?: React.ReactNode;
+}) {
   return (
     <header className="fixed top-0 left-[72px] right-0 h-14 bg-surface-container-lowest border-b border-outline-variant/30 z-40 px-gutter flex items-center justify-between gap-space-md">
       <div className="flex items-center gap-space-sm min-w-0">
         <h1 className="font-headline-md text-on-surface tracking-tight">{title}</h1>
         <span className="h-4 w-px bg-outline-variant/40" aria-hidden="true" />
         <span className="flex items-center gap-1 font-label-md text-on-surface truncate">
-          <span className="material-symbols-outlined text-[18px] text-primary" aria-hidden="true">domain</span>
-          {session.hospitalName}
+          <span className="material-symbols-outlined text-[18px] text-primary" aria-hidden="true">{placeIcon}</span>
+          {place}
         </span>
       </div>
       <div className="flex items-center gap-space-md">
         {actions}
-        <span className="font-label-md text-on-surface hidden md:inline">{session.fullName}</span>
+        <AccountBlock fullName={fullName} />
       </div>
     </header>
   );
+}
+
+/** Fixed top bar matching the dashboard's, for every clinical screen other than the dashboard. */
+export function PageHeader({ title, actions }: { title: string; actions?: React.ReactNode }) {
+  const session = useSession();
+  return <HeaderBar title={title} place={session.hospitalName} placeIcon="domain" fullName={session.fullName} actions={actions} />;
 }
 
 export function PageBody({ children }: { children: React.ReactNode }) {
@@ -186,13 +204,17 @@ export function StatusPill({ status, label }: { status: string; label?: string }
   );
 }
 
-export function FieldError({ message }: { message?: string }) {
+export function FieldError({ message, id }: { message?: string; id?: string }) {
   if (!message) return null;
-  return <span className="font-body-sm text-error">{message}</span>;
+  return (
+    <span id={id} className="font-body-sm text-error">
+      {message}
+    </span>
+  );
 }
 
 export const inputClass =
-  "w-full px-3 py-2 rounded-lg border border-outline-variant/60 bg-surface-bright font-body-md text-on-surface focus:outline-none focus:border-primary disabled:opacity-60";
+  "w-full px-3 py-2 rounded-lg border border-outline-variant/60 bg-surface-bright font-body-md text-on-surface focus:outline-none focus:border-primary aria-[invalid=true]:border-error disabled:opacity-60";
 
 export const primaryButtonClass =
   "inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-on-primary font-label-md cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed";

@@ -52,4 +52,4 @@ async def test_log_provider_delivers_and_keeps_patient_details_out_of_the_log(db
     assert row["sent_at"] is not None
     assert row["attempts"] == 1
     assert str(alert_id) in caplog.text
-    assert "Fixture Smooth Recovery" not in caplog.text
+    assert "Lakshmi Narayanan [Smooth Recovery]" not in caplog.text

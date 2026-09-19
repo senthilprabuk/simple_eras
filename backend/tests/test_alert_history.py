@@ -24,7 +24,7 @@ async def test_filters_by_status_tier_and_patient(client, db, nurse_headers):
     assert {i["tier"] for i in missed["items"]} == {"missed"}
 
     dropout = await _alerts(client, nurse_headers, f"&episode_id={await episode_for_mrn(db, 'FX-06')}")
-    assert [(i["patient_name"], i["tier"]) for i in dropout["items"]] == [("Fixture Drop Out", "missed")]
+    assert [(i["patient_name"], i["tier"]) for i in dropout["items"]] == [("Suresh Babu [Drop Out]", "missed")]
 
 
 async def test_history_records_how_quickly_an_alert_was_acknowledged(client, db, nurse_headers):

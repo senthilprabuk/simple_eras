@@ -28,6 +28,7 @@ class Hospital(Base):
     city: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     timezone: Mapped[str] = mapped_column(Text, nullable=False, default="Asia/Kolkata")
     ack_window_secs: Mapped[int] = mapped_column(Integer, nullable=False, default=900)
+    privacy_law: Mapped[str] = mapped_column(Text, nullable=False, default="DPDP-2023")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
@@ -45,7 +46,8 @@ class AdminUser(Base):
     admin_user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=text("gen_random_uuid()")
     )
-    hospital_id: Mapped[int] = mapped_column(Integer, ForeignKey("meta.hospital.hospital_id"), nullable=False)
+    # Null for an app admin, who belongs to no hospital.
+    hospital_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("meta.hospital.hospital_id"), nullable=True)
     email: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     hashed_password: Mapped[str] = mapped_column(Text, nullable=False)
     full_name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -93,6 +95,7 @@ class Parameter(Base):
     value_max: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2), nullable=True)
     decimal_places: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
     concerning_when_true: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    loinc_code: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
 

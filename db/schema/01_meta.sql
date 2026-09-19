@@ -56,12 +56,15 @@ create table meta.hospital (
     city              text,
     timezone          text        not null default 'Asia/Kolkata',
     ack_window_secs   integer     not null default 900,     -- escalation timer, per hospital
+    privacy_law       text        not null default 'DPDP-2023', -- consent is recorded under this law
     is_active         boolean     not null default true,
     created_at        timestamptz not null default now(),
     updated_at        timestamptz not null default now(),
 
     constraint hospital_ack_window_sane
-        check (ack_window_secs between 60 and 7200)
+        check (ack_window_secs between 60 and 7200),
+    constraint hospital_privacy_law_known
+        check (privacy_law in ('DPDP-2023','HIPAA'))
 );
 
 create trigger hospital_touch before update on meta.hospital
@@ -69,13 +72,15 @@ create trigger hospital_touch before update on meta.hospital
 
 
 -- ---------------------------------------------------------------------
--- admin_user   (hospital-scoped clinician and admin accounts)
+-- admin_user   (clinician and admin accounts)
 --   Email is unique per hospital, not globally: the same clinician may
 --   hold accounts at two hospitals, and login disambiguates on hospital_id.
+--   An app_admin manages hospitals and rulesets for the whole platform and
+--   belongs to no hospital.
 -- ---------------------------------------------------------------------
 create table meta.admin_user (
     admin_user_id     uuid        primary key default gen_random_uuid(),
-    hospital_id       integer     not null references meta.hospital(hospital_id) on delete restrict,
+    hospital_id       integer     references meta.hospital(hospital_id) on delete restrict,
     email             text        not null,
     hashed_password   text        not null,
     full_name         text        not null,
@@ -85,7 +90,9 @@ create table meta.admin_user (
     updated_at        timestamptz not null default now(),
 
     constraint admin_user_role_known
-        check (role in ('admin', 'superadmin')),
+        check (role in ('admin', 'superadmin', 'app_admin')),
+    constraint admin_user_app_admin_has_no_hospital
+        check ((role = 'app_admin') = (hospital_id is null)),
     -- stored lowercase so the unique constraint below is case-insensitive
     constraint admin_user_email_lowercase
         check (email = lower(email)),
@@ -94,6 +101,11 @@ create table meta.admin_user (
 );
 
 create index admin_user_email_idx on meta.admin_user (email);
+
+-- the unique constraint above treats every null hospital as different
+create unique index admin_user_app_admin_email
+    on meta.admin_user (email)
+    where hospital_id is null;
 
 create trigger admin_user_touch before update on meta.admin_user
     for each row execute function meta.set_updated_at();
@@ -154,6 +166,7 @@ create table meta.parameter (
     value_max            numeric(10,2),
     decimal_places       smallint    not null default 0,
     concerning_when_true boolean,                       -- booleans: which answer is the worrying one
+    loinc_code           text,                          -- FHIR Observation.code, e.g. '8310-5'
     is_active            boolean     not null default true,
     created_at           timestamptz not null default now(),
 
@@ -220,6 +233,30 @@ create table meta.ruleset (
 create unique index ruleset_one_approved_per_procedure
     on meta.ruleset (procedure_id)
     where status = 'approved';
+
+-- Enrolled patients stay scored by the version they were enrolled under, so
+-- a published ruleset never changes: it may only be retired.
+create or replace function meta.ruleset_guard() returns trigger
+language plpgsql as $$
+begin
+    if old.status = 'draft' then
+        return new;
+    end if;
+    if old.status = 'approved' and new.status = 'retired'
+       and (new.procedure_id, new.version, new.review_at, new.critical_at, new.max_points_per_parameter,
+            new.approved_by, new.approved_at, new.notes)
+           is not distinct from
+           (old.procedure_id, old.version, old.review_at, old.critical_at, old.max_points_per_parameter,
+            old.approved_by, old.approved_at, old.notes)
+    then
+        return new;
+    end if;
+    raise exception 'ruleset % is %; only a draft can be changed', old.version, old.status
+        using errcode = 'check_violation';
+end $$;
+
+create trigger ruleset_guard before update on meta.ruleset
+    for each row execute function meta.ruleset_guard();
 
 
 -- ---------------------------------------------------------------------

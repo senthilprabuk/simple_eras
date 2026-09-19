@@ -27,7 +27,7 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int = Field(..., description="Token lifetime in seconds")
     admin_user_id: UUID
-    hospital_id: int
-    hospital_name: str
+    hospital_id: Optional[int] = Field(None, description="Null for an app admin, who belongs to no hospital")
+    hospital_name: Optional[str] = None
     full_name: str
     role: str

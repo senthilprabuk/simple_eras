@@ -49,6 +49,14 @@ async def get_system_db() -> AsyncGenerator[AsyncSession, None]:
             await session.rollback()
             raise
 
+async def scope_to_platform(session: AsyncSession) -> None:
+    """
+    Switch the rest of this transaction to eras_platform: hospitals and rulesets
+    across every tenant, and no access to patient data. Transaction-local, like
+    scope_to_hospital, so an app-admin endpoint must not query after committing.
+    """
+    await session.execute(text("set local role eras_platform"))
+
 async def scope_to_hospital(session: AsyncSession, hospital_id: int) -> None:
     """
     Restrict the rest of this transaction to one hospital's rows via row-level

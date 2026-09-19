@@ -42,6 +42,60 @@ export function formatNumber(value: number): string {
 
 export const LANGUAGE_NAMES: Record<string, string> = { en: "English", ta: "Tamil", hi: "Hindi" };
 
+/** FHIR administrative gender. */
+export const GENDER_LABELS: Record<string, string> = {
+  female: "Female",
+  male: "Male",
+  other: "Other",
+  unknown: "Unknown",
+};
+
+export const RELATIONSHIP_LABELS: Record<string, string> = {
+  spouse: "Spouse",
+  son: "Son",
+  daughter: "Daughter",
+  sibling: "Brother or sister",
+  parent: "Parent",
+  other_family: "Other family member",
+  friend: "Friend or neighbour",
+  caregiver: "Paid caregiver",
+};
+
+export const PRIVACY_LAW_NAMES: Record<string, string> = {
+  "DPDP-2023": "the Digital Personal Data Protection Act, 2023",
+  HIPAA: "HIPAA",
+};
+
+export const CONSENT_LABELS: Record<string, string> = {
+  remote_monitoring: "Remote monitoring and WhatsApp messages",
+  data_processing: "Cloud processing of health data",
+  contact_sharing: "Discussing recovery with emergency contacts",
+};
+
+/** "Female, 68 years"; parts that were not recorded are left out. */
+export function formatSexAge(gender: string, ageYears: number | null): string {
+  const sex = gender === "unknown" ? null : (GENDER_LABELS[gender] ?? gender);
+  return [sex, ageYears !== null ? `${ageYears} years` : null].filter(Boolean).join(", ");
+}
+
+/** "08:00:00", "10:00:00" -> "08:00–10:00". */
+export function formatTimeWindow(start: string, end: string): string {
+  return `${start.slice(0, 5)}–${end.slice(0, 5)}`;
+}
+
+/** One line for an ambulance crew: parts left blank are skipped, and a district that repeats the city is not said twice. */
+export function formatAddress(address: {
+  line: string | null;
+  city: string | null;
+  district: string | null;
+  state: string | null;
+  postal_code: string | null;
+}): string {
+  const district = address.district && address.district !== address.city ? address.district : null;
+  const place = [address.line, address.city, district, address.state].filter(Boolean).join(", ");
+  return [place, address.postal_code].filter(Boolean).join(" ");
+}
+
 export const OUTCOME_LABELS: Record<string, string> = {
   reassured: "Reassured, continuing plan",
   plan_adjusted: "Care plan adjusted",

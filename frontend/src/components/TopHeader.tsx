@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import AccountBlock from "@/components/AccountBlock";
 import { formatDuration } from "@/lib/triage";
 
 interface TopHeaderProps {
@@ -69,7 +70,7 @@ export default function TopHeader({
           <span aria-live="polite">{freshness}</span>
         </button>
 
-        <span className="font-label-md text-on-surface hidden md:inline">{fullName}</span>
+        <AccountBlock fullName={fullName} />
       </div>
     </header>
   );

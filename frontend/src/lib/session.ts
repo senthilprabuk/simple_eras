@@ -7,10 +7,35 @@ export interface Session {
   token: string;
   expiresAt: number;
   adminUserId: string;
-  hospitalId: number;
-  hospitalName: string;
+  /** Null for an app admin, who belongs to no hospital. */
+  hospitalId: number | null;
+  hospitalName: string | null;
   fullName: string;
   role: string;
+}
+
+/** A clinician's session: always tied to one hospital. */
+export interface ClinicalSession extends Session {
+  hospitalId: number;
+  hospitalName: string;
+}
+
+/** Manages hospitals and rulesets for the whole platform, at /app_admin; never sees a patient. */
+export const APP_ADMIN_ROLE = "app_admin";
+
+export function isClinicalSession(session: Session): session is ClinicalSession {
+  return session.role !== APP_ADMIN_ROLE && session.hospitalId !== null && session.hospitalName !== null;
+}
+
+/** Where a signed-in user belongs: app admins in the admin area, clinicians on the dashboard. */
+export function homePath(session: Session): string {
+  return session.role === APP_ADMIN_ROLE ? "/app_admin" : "/";
+}
+
+/** Whether a path is one this user may open, so a sign-in link cannot land them in the wrong area. */
+export function allowedPath(session: Session, path: string): boolean {
+  const inAdminArea = path === "/app_admin" || path.startsWith("/app_admin/");
+  return session.role === APP_ADMIN_ROLE ? inAdminArea : !inAdminArea;
 }
 
 const KEY = "eras.session";
@@ -61,4 +86,10 @@ export function saveSession(session: Session): void {
 export function clearSession(): void {
   window.sessionStorage.removeItem(KEY);
   listeners.forEach((notify) => notify());
+}
+
+/** Full page load, not client routing, so no patient data survives in memory after sign-out. */
+export function signOut(): void {
+  clearSession();
+  window.location.replace("/login");
 }

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, date
+from datetime import datetime, date, time
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
 from sqlalchemy import (
@@ -10,6 +10,7 @@ from sqlalchemy import (
     Numeric,
     DateTime,
     Date,
+    Time,
     ForeignKey,
     text,
 )
@@ -30,11 +31,31 @@ class Patient(Base):
     phone_e164: Mapped[str] = mapped_column(Text, nullable=False)
     language_code: Mapped[str] = mapped_column(Text, nullable=False, default="en")
     date_of_birth: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    gender: Mapped[str] = mapped_column(Text, nullable=False, default="unknown")
+    address_line: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    address_city: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    address_district: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    address_state: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    address_postal_code: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    alt_phone_e164: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    email: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
 
     # Relationships
     episodes: Mapped[List["PatientEpisode"]] = relationship("PatientEpisode", back_populates="patient")
+    contacts: Mapped[List["PatientContact"]] = relationship("PatientContact", order_by="PatientContact.priority")
+
+class PatientContact(Base):
+    __tablename__ = "patient_contact"
+    __table_args__ = {"schema": "txn"}
+
+    patient_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("txn.patient.patient_id"), primary_key=True)
+    priority: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    contact_name: Mapped[str] = mapped_column(Text, nullable=False)
+    relationship: Mapped[str] = mapped_column(Text, nullable=False)
+    phone_e164: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
 
 class PatientEpisode(Base):
     __tablename__ = "patient_episode"
@@ -54,6 +75,8 @@ class PatientEpisode(Base):
     consent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     enrolled_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("meta.admin_user.admin_user_id"), nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
+    checkin_window_start: Mapped[time] = mapped_column(Time, nullable=False, server_default=text("'08:00'"))
+    checkin_window_end: Mapped[time] = mapped_column(Time, nullable=False, server_default=text("'10:00'"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
 
     # Relationships
@@ -71,6 +94,18 @@ class EpisodeBaseline(Base):
     value_num: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2), nullable=True)
     value_bool: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     value_code: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
+
+class EpisodeConsent(Base):
+    __tablename__ = "episode_consent"
+    __table_args__ = {"schema": "txn"}
+
+    episode_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("txn.patient_episode.episode_id"), primary_key=True)
+    consent_code: Mapped[str] = mapped_column(Text, primary_key=True)
+    granted: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    privacy_law: Mapped[str] = mapped_column(Text, nullable=False)
+    form_version: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("meta.admin_user.admin_user_id"), nullable=True)
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
 
 class PatientCheckIn(Base):

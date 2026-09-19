@@ -3,7 +3,7 @@
  * clinician's own token; a 401 ends the session and returns to sign-in.
  */
 
-import { clearSession, loadSession, saveSession } from "@/lib/session";
+import { clearSession, loadSession, saveSession, type Session } from "@/lib/session";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -65,11 +65,47 @@ export interface ParameterReading {
   current: number | boolean | string | null;
 }
 
+export interface EmergencyContact {
+  name: string;
+  relationship: string;
+  phone_e164: string;
+}
+
+export interface Address {
+  line: string | null;
+  city: string | null;
+  district: string | null;
+  state: string | null;
+  postal_code: string | null;
+}
+
+export interface ConsentDecision {
+  code: "remote_monitoring" | "data_processing" | "contact_sharing";
+  granted: boolean;
+  privacy_law: string;
+  recorded_at: string;
+}
+
+export interface BodyMeasurements {
+  height_cm: number | null;
+  weight_kg: number | null;
+  bmi: number | null;
+  bp_systolic: number | null;
+  bp_diastolic: number | null;
+}
+
 export interface EpisodeSummary {
   episode_id: string;
   patient_name: string;
   mrn: string | null;
   phone_e164: string;
+  alt_phone_e164: string | null;
+  email: string | null;
+  gender: string;
+  date_of_birth: string | null;
+  age_years: number | null;
+  address: Address | null;
+  emergency_contacts: EmergencyContact[];
   hospital_name: string;
   procedure_code: string;
   procedure_name: string;
@@ -77,6 +113,10 @@ export interface EpisodeSummary {
   post_op_day: number;
   status: string;
   ruleset_version: string;
+  checkin_window_start: string;
+  checkin_window_end: string;
+  consents: ConsentDecision[];
+  body: BodyMeasurements;
   latest_check_in: {
     check_in_id: string;
     day_after_discharge: number;
@@ -152,13 +192,13 @@ export async function request<T>(path: string, init: RequestInit = {}, authentic
   return res.json();
 }
 
-export async function signIn(email: string, password: string, hospitalId?: number): Promise<void> {
+export async function signIn(email: string, password: string, hospitalId?: number): Promise<Session> {
   const data = await request<{
     access_token: string;
     expires_in: number;
     admin_user_id: string;
-    hospital_id: number;
-    hospital_name: string;
+    hospital_id: number | null;
+    hospital_name: string | null;
     full_name: string;
     role: string;
   }>(
@@ -166,7 +206,7 @@ export async function signIn(email: string, password: string, hospitalId?: numbe
     { method: "POST", body: JSON.stringify({ email, password, hospital_id: hospitalId }) },
     false,
   );
-  saveSession({
+  const session: Session = {
     token: data.access_token,
     expiresAt: Date.now() + data.expires_in * 1000,
     adminUserId: data.admin_user_id,
@@ -174,7 +214,9 @@ export async function signIn(email: string, password: string, hospitalId?: numbe
     hospitalName: data.hospital_name,
     fullName: data.full_name,
     role: data.role,
-  });
+  };
+  saveSession(session);
+  return session;
 }
 
 /** Hospitals offered when the same account exists at several; only sent after the password matched. */

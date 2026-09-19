@@ -10,9 +10,12 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
-from app.db.session import get_db, scope_to_hospital
+from app.db.session import get_db, scope_to_hospital, scope_to_platform
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+
+# Manages hospitals and rulesets for the whole platform; belongs to no hospital.
+APP_ADMIN_ROLE = "app_admin"
 
 class AuthenticatedAdmin(BaseModel):
     admin_user_id: UUID
@@ -99,6 +102,9 @@ async def get_current_admin(
     )
 
     payload = decode_access_token(token)
+    if payload.get("role") == APP_ADMIN_ROLE:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="App admins cannot open patient records")
+
     admin_user_id_str: Optional[str] = payload.get("sub")
     hospital_id: Optional[int] = payload.get("hospital_id")
 
@@ -110,10 +116,12 @@ async def get_current_admin(
     except ValueError:
         raise credentials_exception
 
+    # A deactivated hospital's accounts stop working at once, not when their tokens expire.
     query = text("""
-        SELECT admin_user_id, hospital_id, email, full_name, role, is_active
-        FROM meta.admin_user
-        WHERE admin_user_id = :admin_id AND hospital_id = :h_id;
+        SELECT u.admin_user_id, u.hospital_id, u.email, u.full_name, u.role, u.is_active
+        FROM meta.admin_user u
+        JOIN meta.hospital h ON h.hospital_id = u.hospital_id AND h.is_active
+        WHERE u.admin_user_id = :admin_id AND u.hospital_id = :h_id;
     """)
     result = await db.execute(query, {"admin_id": admin_uuid, "h_id": hospital_id})
     row = result.fetchone()
@@ -135,3 +143,40 @@ async def require_superadmin(admin: AuthenticatedAdmin = Depends(get_current_adm
     if admin.role != "superadmin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only a superadmin can make this change")
     return admin
+
+class AuthenticatedAppAdmin(BaseModel):
+    admin_user_id: UUID
+    email: str
+    full_name: str
+
+async def get_app_admin(
+    token: str = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> AuthenticatedAppAdmin:
+    """
+    Authenticate an app admin, then switch the request's session to the platform
+    role: every hospital and ruleset, and no patient data.
+    """
+    payload = decode_access_token(token)
+    if payload.get("role") != APP_ADMIN_ROLE:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only an app admin can do this")
+
+    try:
+        admin_uuid = UUID(payload.get("sub") or "")
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
+
+    row = (await db.execute(text("""
+        SELECT admin_user_id, email, full_name
+        FROM meta.admin_user
+        WHERE admin_user_id = :admin_id AND role = 'app_admin' AND hospital_id IS NULL AND is_active
+    """), {"admin_id": admin_uuid})).fetchone()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials or inactive account",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    await scope_to_platform(db)
+    return AuthenticatedAppAdmin(admin_user_id=row.admin_user_id, email=row.email, full_name=row.full_name)

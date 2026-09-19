@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDate, formatPct, formatShortDate } from "@/lib/format";
+import { formatAddress, formatDate, formatPct, formatSexAge, formatShortDate, formatTimeWindow } from "@/lib/format";
 
 describe("calendar dates", () => {
   it("shows the date as written, whatever the viewer's timezone", () => {
@@ -18,5 +18,35 @@ describe("formatPct", () => {
     expect(formatPct(null)).toBe("—");
     expect(formatPct(0)).toBe("0.0%");
     expect(formatPct(27.27)).toBe("27.3%");
+  });
+});
+
+describe("formatAddress", () => {
+  const home = { line: "12 Race Course Road", city: "Coimbatore", district: "Coimbatore", state: "Tamil Nadu", postal_code: "641018" };
+
+  it("does not repeat a district that is also the city", () => {
+    expect(formatAddress(home)).toBe("12 Race Course Road, Coimbatore, Tamil Nadu 641018");
+  });
+
+  it("names the district when it differs and skips blank parts", () => {
+    expect(formatAddress({ ...home, city: "Avinashi", district: "Tiruppur", state: null })).toBe(
+      "12 Race Course Road, Avinashi, Tiruppur 641018",
+    );
+    expect(formatAddress({ line: null, city: null, district: "Coimbatore", state: null, postal_code: null })).toBe("Coimbatore");
+  });
+});
+
+describe("formatSexAge", () => {
+  it("leaves out what was not recorded", () => {
+    expect(formatSexAge("female", 68)).toBe("Female, 68 years");
+    expect(formatSexAge("male", null)).toBe("Male");
+    expect(formatSexAge("unknown", 70)).toBe("70 years");
+    expect(formatSexAge("unknown", null)).toBe("");
+  });
+});
+
+describe("formatTimeWindow", () => {
+  it("drops the seconds", () => {
+    expect(formatTimeWindow("08:00:00", "10:00:00")).toBe("08:00–10:00");
   });
 });

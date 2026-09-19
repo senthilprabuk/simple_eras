@@ -2,12 +2,16 @@
 
 import React, { useEffect, useState } from "react";
 import { ApiError, HospitalChoice, hospitalChoices, signIn } from "@/lib/api";
-import { loadSession } from "@/lib/session";
+import { allowedPath, homePath, loadSession, type Session } from "@/lib/session";
 
-/** Only same-site paths, so a crafted link cannot bounce a clinician to another origin. */
-function nextPath(): string {
+/**
+ * Only same-site paths, so a crafted link cannot bounce a clinician to another
+ * origin, and only paths in the signed-in user's own area.
+ */
+function nextPath(session: Session): string {
   const next = new URLSearchParams(window.location.search).get("next");
-  return next && next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/login") ? next : "/";
+  const sameSite = next && next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/login");
+  return sameSite && allowedPath(session, next) ? next : homePath(session);
 }
 
 export default function LoginPage() {
@@ -19,7 +23,8 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (loadSession()) window.location.replace(nextPath());
+    const session = loadSession();
+    if (session) window.location.replace(nextPath(session));
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -27,8 +32,8 @@ export default function LoginPage() {
     setBusy(true);
     setError(null);
     try {
-      await signIn(email, password, hospitalId ?? undefined);
-      window.location.replace(nextPath());
+      const session = await signIn(email, password, hospitalId ?? undefined);
+      window.location.replace(nextPath(session));
     } catch (err) {
       const offered = hospitalChoices(err);
       if (offered) {
@@ -53,7 +58,7 @@ export default function LoginPage() {
           </span>
           <div>
             <h1 className="font-headline-md text-on-surface">ERAS Remote Monitoring</h1>
-            <p className="font-body-sm text-on-surface-variant">Clinician sign-in</p>
+            <p className="font-body-sm text-on-surface-variant">Sign in</p>
           </div>
         </div>
 

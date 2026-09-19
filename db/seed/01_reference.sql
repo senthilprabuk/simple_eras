@@ -35,23 +35,30 @@ on conflict (hospital_id, procedure_id) do nothing;
 
 -- ---------------------------------------------------------------------
 -- Parameter registry
+--   The last four are recorded once at enrollment and never asked in a
+--   check-in, so no ruleset binds them. loinc_code is the FHIR
+--   Observation.code; the yes/no symptoms have no standard code.
 -- ---------------------------------------------------------------------
 insert into meta.parameter
     (parameter_code, parameter_name, parameter_type, unit,
-     value_min, value_max, decimal_places, concerning_when_true)
+     value_min, value_max, decimal_places, concerning_when_true, loinc_code)
 values
-    ('temp_c',      'Temperature',                  'numeric', 'C',   30,    45, 1, null),
-    ('hr',          'Pulse',                        'numeric', 'bpm', 30,   220, 0, null),
-    ('spo2',        'Oxygen saturation',            'numeric', '%',   50,   100, 0, null),
-    ('pain',        'Pain score',                   'numeric', null,   0,    10, 0, null),
-    ('steps',       'Steps walked',                 'numeric', null,   0, 50000, 0, null),
-    ('calf_pain',   'Calf pain or swelling',        'boolean', null, null, null, 0, true),
-    ('breathless',  'Breathlessness or chest pain', 'boolean', null, null, null, 0, true),
-    ('drainage',    'Wound still leaking',          'boolean', null, null, null, 0, true),
-    ('chills',      'Shivering or chills',          'boolean', null, null, null, 0, true),
-    ('weight_bear', 'Harder to bear weight',        'boolean', null, null, null, 0, true),
-    ('knee_bend',   'Knee bend reached',            'ordinal', null, null, null, 0, null),
-    ('walk_aid',    'Walking aid in use',           'ordinal', null, null, null, 0, null)
+    ('temp_c',      'Temperature',                  'numeric', 'C',    30,    45, 1, null, '8310-5'),
+    ('hr',          'Pulse',                        'numeric', 'bpm',  30,   220, 0, null, '8867-4'),
+    ('spo2',        'Oxygen saturation',            'numeric', '%',    50,   100, 0, null, '59408-5'),
+    ('pain',        'Pain score',                   'numeric', null,    0,    10, 0, null, '72514-3'),
+    ('steps',       'Steps walked',                 'numeric', null,    0, 50000, 0, null, '55423-8'),
+    ('calf_pain',   'Calf pain or swelling',        'boolean', null, null,  null, 0, true, null),
+    ('breathless',  'Breathlessness or chest pain', 'boolean', null, null,  null, 0, true, null),
+    ('drainage',    'Wound still leaking',          'boolean', null, null,  null, 0, true, null),
+    ('chills',      'Shivering or chills',          'boolean', null, null,  null, 0, true, null),
+    ('weight_bear', 'Harder to bear weight',        'boolean', null, null,  null, 0, true, null),
+    ('knee_bend',   'Knee bend reached',            'ordinal', null, null,  null, 0, null, null),
+    ('walk_aid',    'Walking aid in use',           'ordinal', null, null,  null, 0, null, null),
+    ('height_cm',   'Height',                       'numeric', 'cm',  100,   230, 0, null, '8302-2'),
+    ('weight_kg',   'Weight',                       'numeric', 'kg',   25,   250, 1, null, '29463-7'),
+    ('bp_sys',      'Blood pressure, systolic',     'numeric', 'mmHg', 60,   260, 0, null, '8480-6'),
+    ('bp_dia',      'Blood pressure, diastolic',    'numeric', 'mmHg', 30,   160, 0, null, '8462-4')
 on conflict (parameter_code) do nothing;
 
 insert into meta.parameter_option (parameter_id, option_code, option_label, ordinal_rank)

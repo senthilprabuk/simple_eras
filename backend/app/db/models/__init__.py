@@ -11,8 +11,10 @@ from app.db.models.meta import (
 )
 from app.db.models.txn import (
     Patient,
+    PatientContact,
     PatientEpisode,
     EpisodeBaseline,
+    EpisodeConsent,
     PatientCheckIn,
     PatientCheckInValue,
     CheckInEvaluation,
@@ -31,8 +33,10 @@ __all__ = [
     "Ruleset",
     "ProcedureParameter",
     "Patient",
+    "PatientContact",
     "PatientEpisode",
     "EpisodeBaseline",
+    "EpisodeConsent",
     "PatientCheckIn",
     "PatientCheckInValue",
     "CheckInEvaluation",

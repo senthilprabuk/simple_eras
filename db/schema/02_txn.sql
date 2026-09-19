@@ -10,25 +10,61 @@ begin;
 -- patient   (the person — stable across surgeries)
 -- ---------------------------------------------------------------------
 create table txn.patient (
-    patient_id    uuid        primary key default gen_random_uuid(),
-    hospital_id   integer     not null references meta.hospital(hospital_id),
-    mrn           text,                                   -- hospital record number, typed in manually
-    patient_name  text        not null,
-    phone_e164    text        not null,
-    language_code text        not null default 'en',
-    date_of_birth date,
-    created_at    timestamptz not null default now(),
-    updated_at    timestamptz not null default now(),
+    patient_id          uuid        primary key default gen_random_uuid(),
+    hospital_id         integer     not null references meta.hospital(hospital_id),
+    mrn                 text,                             -- hospital record number, typed in manually
+    patient_name        text        not null,
+    phone_e164          text        not null,             -- WhatsApp, the primary channel
+    language_code       text        not null default 'en',
+    date_of_birth       date,
+    gender              text        not null default 'unknown',  -- FHIR administrative gender
+    -- home address, for an ambulance or a home visit (FHIR Patient.address)
+    address_line        text,
+    address_city        text,
+    address_district    text,
+    address_state       text,
+    address_postal_code text,
+    -- second channel if WhatsApp fails (FHIR Patient.telecom, rank 2)
+    alt_phone_e164      text,
+    email               text,
+    created_at          timestamptz not null default now(),
+    updated_at          timestamptz not null default now(),
 
     unique (hospital_id, mrn),
     -- target for patient_episode's same-hospital foreign key
     constraint patient_id_hospital_unique unique (patient_id, hospital_id),
     constraint patient_language_known check (language_code in ('en','ta','hi')),
-    constraint patient_phone_e164     check (phone_e164 ~ '^\+[1-9][0-9]{7,14}$')
+    constraint patient_phone_e164     check (phone_e164 ~ '^\+[1-9][0-9]{7,14}$'),
+    constraint patient_gender_known   check (gender in ('male','female','other','unknown')),
+    constraint patient_postal_code    check (address_postal_code ~ '^[A-Za-z0-9 -]{3,10}$'),
+    constraint patient_alt_phone_e164 check (alt_phone_e164 ~ '^\+[1-9][0-9]{7,14}$'),
+    constraint patient_email_shape    check (email ~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$')
 );
 
 create trigger patient_touch before update on txn.patient
     for each row execute function meta.set_updated_at();
+
+
+-- ---------------------------------------------------------------------
+-- patient_contact   (emergency contacts and caregivers — FHIR Patient.contact)
+--   Knee-replacement patients are mostly elderly; when a check-in shows
+--   breathlessness or confusion, the person who can act may be a spouse
+--   or son rather than the patient. Priority is the order to call them.
+-- ---------------------------------------------------------------------
+create table txn.patient_contact (
+    patient_id    uuid        not null references txn.patient(patient_id) on delete cascade,
+    priority      smallint    not null,              -- 1 = call first
+    contact_name  text        not null,
+    relationship  text        not null,
+    phone_e164    text        not null,
+    created_at    timestamptz not null default now(),
+
+    primary key (patient_id, priority),
+    constraint contact_priority_range     check (priority between 1 and 3),
+    constraint contact_relationship_known check (relationship in
+        ('spouse','son','daughter','sibling','parent','other_family','friend','caregiver')),
+    constraint contact_phone_e164         check (phone_e164 ~ '^\+[1-9][0-9]{7,14}$')
+);
 
 
 -- ---------------------------------------------------------------------
@@ -50,11 +86,15 @@ create table txn.patient_episode (
     consent_at         timestamptz not null,
     enrolled_by        uuid        references meta.admin_user(admin_user_id) on delete set null,
     status             text        not null default 'active',
+    -- when the patient prefers to be asked, in the hospital's local time
+    checkin_window_start time      not null default '08:00',
+    checkin_window_end   time      not null default '10:00',
     created_at         timestamptz not null default now(),
 
     constraint episode_status_known    check (status in ('active','completed','withdrawn')),
     constraint episode_dates_ordered   check (discharge_date >= surgery_date),
     constraint episode_end_after_disch check (monitoring_ends_on > discharge_date),
+    constraint episode_checkin_window_ordered check (checkin_window_end > checkin_window_start),
     -- an episode may only belong to its patient's own hospital, so the
     -- tenant a query filters on can never disagree between the two tables
     constraint episode_patient_same_hospital
@@ -86,6 +126,31 @@ create table txn.episode_baseline (
         (value_num  is not null)::int
       + (value_bool is not null)::int
       + (value_code is not null)::int = 1)
+);
+
+
+-- ---------------------------------------------------------------------
+-- episode_consent   (one row per consent decision — FHIR Consent)
+--   remote_monitoring   daily check-ins and WhatsApp messages
+--   data_processing     storing and processing health data in the cloud
+--   contact_sharing     discussing the patient with their emergency contacts
+--   A refusal is recorded too: granted = false is an answer, a missing
+--   row is not.
+-- ---------------------------------------------------------------------
+create table txn.episode_consent (
+    episode_id    uuid        not null references txn.patient_episode(episode_id) on delete cascade,
+    consent_code  text        not null,
+    granted       boolean     not null,
+    privacy_law   text        not null,          -- copied from meta.hospital at the time
+    form_version  text        not null,
+    recorded_by   uuid        references meta.admin_user(admin_user_id) on delete set null,
+    recorded_at   timestamptz not null default now(),
+
+    primary key (episode_id, consent_code),
+    constraint consent_code_known
+        check (consent_code in ('remote_monitoring','data_processing','contact_sharing')),
+    constraint consent_privacy_law_known
+        check (privacy_law in ('DPDP-2023','HIPAA'))
 );
 
 

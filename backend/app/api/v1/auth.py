@@ -1,12 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from app.core.config import settings
 from app.core.login_throttle import login_throttle
 from app.core.security import burn_password_check, create_access_token, verify_password
-from app.db.models.meta import AdminUser
+from app.db.models.meta import AdminUser, Hospital
 from app.db.session import get_db
 from app.schemas.auth import LoginRequest, TokenResponse
 
@@ -39,7 +39,13 @@ async def login(
             detail="Too many failed sign-in attempts. Try again later.",
         )
 
-    query = select(AdminUser).where(AdminUser.email == req.email, AdminUser.is_active.is_(True))
+    # App admins belong to no hospital; everyone else only while their hospital is active.
+    query = select(AdminUser).where(
+        AdminUser.email == req.email,
+        AdminUser.is_active.is_(True),
+        or_(AdminUser.hospital_id.is_(None),
+            AdminUser.hospital_id.in_(select(Hospital.hospital_id).where(Hospital.is_active.is_(True)))),
+    )
     if req.hospital_id is not None:
         query = query.where(AdminUser.hospital_id == req.hospital_id)
     candidates = list((await db.execute(query)).scalars().all())
@@ -89,7 +95,7 @@ async def login(
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         admin_user_id=admin.admin_user_id,
         hospital_id=admin.hospital_id,
-        hospital_name=hospitals[0]["hospital_name"],
+        hospital_name=hospitals[0]["hospital_name"] if admin.hospital_id is not None else None,
         full_name=admin.full_name,
         role=admin.role,
     )

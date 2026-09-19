@@ -1,4 +1,5 @@
-from typing import Optional
+from datetime import date
+from typing import Dict, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import text
@@ -6,9 +7,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.core.security import get_current_admin, AuthenticatedAdmin
-from app.schemas.episode import EpisodeSummary, LatestCheckIn, ParameterReading, ReadingValue
+from app.schemas.episode import (
+    Address,
+    BodyMeasurements,
+    ConsentDecision,
+    EmergencyContact,
+    EpisodeSummary,
+    LatestCheckIn,
+    ParameterReading,
+    ReadingValue,
+)
 
 router = APIRouter(prefix="/episodes", tags=["Episodes"])
+
+ADDRESS_FIELDS = ("line", "city", "district", "state", "postal_code")
 
 def _value(kind: str, num, flag, label) -> Optional[ReadingValue]:
     if kind == "boolean":
@@ -17,21 +29,45 @@ def _value(kind: str, num, flag, label) -> Optional[ReadingValue]:
         return label
     return float(num) if num is not None else None
 
+def _age(born: Optional[date], today: date) -> Optional[int]:
+    if born is None:
+        return None
+    return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+
+def _body(values: Dict[str, float]) -> BodyMeasurements:
+    height, weight = values.get("height_cm"), values.get("weight_kg")
+    bp_sys, bp_dia = values.get("bp_sys"), values.get("bp_dia")
+    return BodyMeasurements(
+        height_cm=height,
+        weight_kg=weight,
+        bmi=round(weight / (height / 100) ** 2, 1) if height and weight else None,
+        bp_systolic=int(bp_sys) if bp_sys is not None else None,
+        bp_diastolic=int(bp_dia) if bp_dia is not None else None,
+    )
+
 @router.get("/{episode_id}/summary", response_model=EpisodeSummary)
 async def get_episode_summary(
     episode_id: UUID,
     current_admin: AuthenticatedAdmin = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    """The patient behind an alert: contact details, discharge baseline and latest check-in."""
+    """
+    The patient behind an alert: who to call and where they live, discharge
+    baseline and latest check-in.
+    """
     episode = (await db.execute(
         text("""
             SELECT
-                e.episode_id, e.ruleset_id, e.discharge_date, e.status,
-                p.patient_name, p.mrn, p.phone_e164,
+                e.episode_id, e.patient_id, e.ruleset_id, e.discharge_date, e.status,
+                e.checkin_window_start, e.checkin_window_end,
+                p.patient_name, p.mrn, p.phone_e164, p.alt_phone_e164, p.email,
+                p.gender, p.date_of_birth,
+                p.address_line AS line, p.address_city AS city, p.address_district AS district,
+                p.address_state AS state, p.address_postal_code AS postal_code,
                 h.hospital_name,
                 sp.procedure_code, sp.procedure_name,
                 r.version AS ruleset_version,
+                (now() AT TIME ZONE h.timezone)::date AS today,
                 ((now() AT TIME ZONE h.timezone)::date - e.discharge_date) AS post_op_day
             FROM txn.patient_episode e
             JOIN txn.patient p              ON p.patient_id    = e.patient_id
@@ -87,6 +123,29 @@ async def get_episode_summary(
         },
     )).mappings().all()
 
+    contacts = (await db.execute(text("""
+        SELECT contact_name AS name, relationship, phone_e164
+        FROM txn.patient_contact
+        WHERE patient_id = :patient_id
+        ORDER BY priority
+    """), {"patient_id": episode["patient_id"]})).mappings().all()
+
+    consents = (await db.execute(text("""
+        SELECT consent_code AS code, granted, privacy_law, recorded_at
+        FROM txn.episode_consent
+        WHERE episode_id = :episode_id
+        ORDER BY array_position(ARRAY['remote_monitoring', 'data_processing', 'contact_sharing'], consent_code)
+    """), {"episode_id": episode_id})).mappings().all()
+
+    body = {r["parameter_code"]: float(r["value_num"]) for r in (await db.execute(text("""
+        SELECT p.parameter_code, b.value_num
+        FROM txn.episode_baseline b
+        JOIN meta.parameter p ON p.parameter_id = b.parameter_id
+        WHERE b.episode_id = :episode_id
+          AND p.parameter_code IN ('height_cm', 'weight_kg', 'bp_sys', 'bp_dia')
+          AND b.value_num IS NOT NULL
+    """), {"episode_id": episode_id})).mappings().all()}
+
     readings = []
     for r in rows:
         kind = r["parameter_type"]
@@ -105,11 +164,19 @@ async def get_episode_summary(
             current=current,
         ))
 
+    has_address = any(episode[f] for f in ADDRESS_FIELDS)
     return EpisodeSummary(
         episode_id=episode["episode_id"],
         patient_name=episode["patient_name"],
         mrn=episode["mrn"],
         phone_e164=episode["phone_e164"],
+        alt_phone_e164=episode["alt_phone_e164"],
+        email=episode["email"],
+        gender=episode["gender"],
+        date_of_birth=episode["date_of_birth"],
+        age_years=_age(episode["date_of_birth"], episode["today"]),
+        address=Address(**{f: episode[f] for f in ADDRESS_FIELDS}) if has_address else None,
+        emergency_contacts=[EmergencyContact(**c) for c in contacts],
         hospital_name=episode["hospital_name"],
         procedure_code=episode["procedure_code"],
         procedure_name=episode["procedure_name"],
@@ -117,6 +184,10 @@ async def get_episode_summary(
         post_op_day=episode["post_op_day"],
         status=episode["status"],
         ruleset_version=episode["ruleset_version"],
+        checkin_window_start=episode["checkin_window_start"],
+        checkin_window_end=episode["checkin_window_end"],
+        consents=[ConsentDecision(**c) for c in consents],
+        body=_body(body),
         latest_check_in=LatestCheckIn(**latest) if latest else None,
         readings=readings,
     )

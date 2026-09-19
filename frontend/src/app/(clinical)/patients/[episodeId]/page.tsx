@@ -5,9 +5,19 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import TrendChart from "@/components/charts/TrendChart";
 import { Card, ErrorBanner, Loading, PageBody, PageHeader, StatusPill } from "@/components/ui";
-import { fetchEpisodeSummary } from "@/lib/api";
+import WhoToCall from "@/components/WhoToCall";
+import { fetchEpisodeSummary, type EpisodeSummary } from "@/lib/api";
 import { fetchPatientTimeline, type ObservationCell, type ObservationRow, type Trend } from "@/lib/clinicalApi";
-import { formatDate, formatDateTime, formatNumber, formatShortDate } from "@/lib/format";
+import {
+  CONSENT_LABELS,
+  PRIVACY_LAW_NAMES,
+  formatDate,
+  formatDateTime,
+  formatNumber,
+  formatSexAge,
+  formatShortDate,
+  formatTimeWindow,
+} from "@/lib/format";
 import { useApiData } from "@/lib/useApiData";
 
 const TREND_TITLES: Record<string, string> = {
@@ -140,6 +150,76 @@ function ObservationsCard({
   );
 }
 
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <>
+      <dt className="text-on-surface-variant">{label}</dt>
+      <dd className="text-on-surface">{children}</dd>
+    </>
+  );
+}
+
+function PatientDetails({ summary }: { summary: EpisodeSummary }) {
+  const body = summary.body;
+  const notRecorded = <span className="text-on-surface-variant">Not recorded</span>;
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-space-lg items-start">
+      <Card title="If the patient cannot be reached">
+        <WhoToCall summary={summary} />
+      </Card>
+
+      <Card title="Body measurements" subtitle="Recorded at enrollment">
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-space-md gap-y-1 font-body-md">
+          <Row label="Height">{body.height_cm !== null ? `${body.height_cm} cm` : notRecorded}</Row>
+          <Row label="Weight">{body.weight_kg !== null ? `${body.weight_kg} kg` : notRecorded}</Row>
+          <Row label="BMI">
+            {body.bmi === null ? (
+              notRecorded
+            ) : (
+              <span className={body.bmi > 35 ? "text-error font-semibold" : undefined}>
+                {body.bmi}
+                {body.bmi > 35 ? " · above 35, higher risk of clots and wound problems" : ""}
+              </span>
+            )}
+          </Row>
+          <Row label="Blood pressure">
+            {body.bp_systolic !== null && body.bp_diastolic !== null ? `${body.bp_systolic}/${body.bp_diastolic} mmHg` : notRecorded}
+          </Row>
+        </dl>
+      </Card>
+
+      <Card title="Monitoring and consent">
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-space-md gap-y-1 font-body-md">
+          <Row label="Check-in time">{formatTimeWindow(summary.checkin_window_start, summary.checkin_window_end)}</Row>
+        </dl>
+        {summary.consents.length === 0 ? (
+          <p className="font-body-sm text-on-surface-variant mt-space-sm">No itemised consent recorded for this enrollment.</p>
+        ) : (
+          <ul className="flex flex-col gap-1 mt-space-sm">
+            {summary.consents.map((c) => (
+              <li key={c.code} className="flex items-start gap-1.5 font-body-md text-on-surface">
+                <span
+                  className={`material-symbols-outlined text-[18px] ${c.granted ? "text-primary" : "text-on-surface-variant"}`}
+                  aria-hidden="true"
+                >
+                  {c.granted ? "check_circle" : "block"}
+                </span>
+                <span>
+                  {CONSENT_LABELS[c.code] ?? c.code}: {c.granted ? "given" : "declined"}
+                </span>
+              </li>
+            ))}
+            <li className="font-body-sm text-on-surface-variant">
+              Recorded {formatDateTime(summary.consents[0].recorded_at)} under{" "}
+              {PRIVACY_LAW_NAMES[summary.consents[0].privacy_law] ?? summary.consents[0].privacy_law}
+            </li>
+          </ul>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 export default function PatientRecordPage() {
   const { episodeId } = useParams<{ episodeId: string }>();
   const loadSummary = useCallback(() => fetchEpisodeSummary(episodeId), [episodeId]);
@@ -180,8 +260,9 @@ export default function PatientRecordPage() {
                 <StatusPill status={s.status} />
               </div>
               <p className="font-body-md text-on-surface-variant">
-                MRN {s.mrn ?? "not recorded"} · {s.procedure_name} · discharged {formatDate(s.discharge_date)} · ruleset{" "}
-                {s.ruleset_version}
+                MRN {s.mrn ?? "not recorded"}
+                {formatSexAge(s.gender, s.age_years) ? ` · ${formatSexAge(s.gender, s.age_years)}` : ""} · {s.procedure_name} ·
+                discharged {formatDate(s.discharge_date)} · ruleset {s.ruleset_version}
               </p>
               <p className="font-body-sm text-on-surface-variant">
                 {s.latest_check_in
@@ -207,6 +288,8 @@ export default function PatientRecordPage() {
             </div>
           </section>
         )}
+
+        {s && <PatientDetails summary={s} />}
 
         {!t && !timeline.error && <Loading label="Loading the patient's record…" />}
 

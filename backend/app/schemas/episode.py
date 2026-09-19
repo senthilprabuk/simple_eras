@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import List, Optional, Union
 from uuid import UUID
 from pydantic import BaseModel, Field
@@ -24,12 +24,45 @@ class LatestCheckIn(BaseModel):
     source: str
     photo_submitted: bool
 
+class EmergencyContact(BaseModel):
+    name: str
+    relationship: str
+    phone_e164: str
+
+class Address(BaseModel):
+    line: Optional[str] = None
+    city: Optional[str] = None
+    district: Optional[str] = None
+    state: Optional[str] = None
+    postal_code: Optional[str] = None
+
+class ConsentDecision(BaseModel):
+    code: str = Field(..., description="remote_monitoring, data_processing or contact_sharing")
+    granted: bool
+    privacy_law: str
+    recorded_at: datetime
+
+class BodyMeasurements(BaseModel):
+    """Recorded at enrollment. BMI is worked out from height and weight, never typed in."""
+    height_cm: Optional[float] = None
+    weight_kg: Optional[float] = None
+    bmi: Optional[float] = None
+    bp_systolic: Optional[int] = None
+    bp_diastolic: Optional[int] = None
+
 class EpisodeSummary(BaseModel):
     """What a clinician needs beside an alert: who the patient is and their latest readings."""
     episode_id: UUID
     patient_name: str
     mrn: Optional[str] = None
     phone_e164: str
+    alt_phone_e164: Optional[str] = None
+    email: Optional[str] = None
+    gender: str
+    date_of_birth: Optional[date] = None
+    age_years: Optional[int] = None
+    address: Optional[Address] = Field(None, description="Null when no address was recorded")
+    emergency_contacts: List[EmergencyContact] = Field(default_factory=list, description="In the order to call them")
     hospital_name: str
     procedure_code: str
     procedure_name: str
@@ -37,5 +70,9 @@ class EpisodeSummary(BaseModel):
     post_op_day: int
     status: str
     ruleset_version: str
+    checkin_window_start: time
+    checkin_window_end: time
+    consents: List[ConsentDecision] = Field(default_factory=list)
+    body: BodyMeasurements
     latest_check_in: Optional[LatestCheckIn] = None
     readings: List[ParameterReading]

@@ -26,6 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.db.session import async_session_factory
 from app.core.security import get_password_hash
 
+APP_ADMIN_EMAIL = "appadmin@eras.local"
+
 async def seed_demo(session_factory=None):
     print("================================================================")
     print("        ERAS DEMO CLINICAL SEED SCRIPT (PAGE 1)                ")
@@ -71,6 +73,15 @@ async def seed_demo(session_factory=None):
                 );
             """), {"aid": aid, "hid": hid, "email": email, "pwd": pwd, "name": name, "role": role})
             print(f"  [+] Created {role.upper()}: {name:<22} | {email}")
+
+        # The platform's app admin manages hospitals and rulesets and belongs to no hospital.
+        await session.execute(text("DELETE FROM meta.admin_user WHERE email = :email AND hospital_id IS NULL"),
+                              {"email": APP_ADMIN_EMAIL})
+        await session.execute(text("""
+            INSERT INTO meta.admin_user (hospital_id, email, hashed_password, full_name, role, is_active)
+            VALUES (NULL, :email, :pwd, 'Platform App Admin', 'app_admin', true);
+        """), {"email": APP_ADMIN_EMAIL, "pwd": hashed_password})
+        print(f"  [+] Created APP_ADMIN: {'Platform App Admin':<22} | {APP_ADMIN_EMAIL}")
 
         # 3. Retrieve existing fixture patients & episodes
         print("\n[*] 3. Fetching existing fixture patients and episodes:")
@@ -291,6 +302,7 @@ async def seed_demo(session_factory=None):
     print("  1. Nurse Admin:   nurse.sarah@stmarys.org  |  password123")
     print("  2. Surgeon Admin: dr.mehta@stmarys.org     |  password123")
     print("  3. Superadmin:    admin@stmarys.org        |  password123")
+    print(f"  4. App Admin:     {APP_ADMIN_EMAIL:<24} |  password123   (opens /app_admin)")
     print("================================================================\n")
 
 if __name__ == "__main__":

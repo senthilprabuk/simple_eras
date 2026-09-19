@@ -27,7 +27,7 @@ async def test_list_shows_active_patients_most_urgent_first(client, nurse_header
 async def test_list_reports_adherence_from_check_in_days(client, nurse_headers):
     items = (await client.get("/api/v1/patients?search=FX-06", headers=nurse_headers)).json()["items"]
     dropout = items[0]
-    assert dropout["patient_name"] == "Fixture Drop Out"
+    assert dropout["patient_name"] == "Suresh Babu [Drop Out]"
     assert dropout["post_op_day"] == 21
     assert dropout["check_in_days"] == 6          # days 0-5, then it stops
     assert dropout["expected_check_in_days"] == 22

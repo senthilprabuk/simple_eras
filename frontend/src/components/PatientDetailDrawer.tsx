@@ -3,8 +3,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ApiError, EpisodeSummary, Outcome, QueueRow, fetchEpisodeSummary, resolveAlert } from "@/lib/api";
+import { formatSexAge } from "@/lib/format";
 import { formatReading, isConcerning, reasonText } from "@/lib/triage";
 import { TierBadge } from "@/components/RiskQueueTable";
+import WhoToCall from "@/components/WhoToCall";
 
 interface PatientDetailDrawerProps {
   row: QueueRow;
@@ -108,7 +110,9 @@ export default function PatientDetailDrawer({ row, onClose, onResolved }: Patien
               )}
             </div>
             <p className="font-body-sm text-on-surface-variant">
-              MRN {row.mrn ?? "not recorded"} · {summary?.procedure_name ?? row.procedure_code} · {row.hospital_name}
+              MRN {row.mrn ?? "not recorded"}
+              {summary && formatSexAge(summary.gender, summary.age_years) ? ` · ${formatSexAge(summary.gender, summary.age_years)}` : ""} ·{" "}
+              {summary?.procedure_name ?? row.procedure_code} · {row.hospital_name}
             </p>
           </div>
           <button
@@ -168,6 +172,11 @@ export default function PatientDetailDrawer({ row, onClose, onResolved }: Patien
                   Open full record
                 </Link>
               </div>
+
+              <section className="border border-outline-variant/30 rounded-xl p-space-md flex flex-col gap-space-sm">
+                <h3 className="font-title-sm text-on-surface">If the patient cannot be reached</h3>
+                <WhoToCall summary={summary} />
+              </section>
 
               <section className="border border-outline-variant/30 rounded-xl overflow-hidden">
                 <div className="px-space-md py-space-sm bg-surface-bright/50 border-b border-outline-variant/30">

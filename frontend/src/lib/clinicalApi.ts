@@ -167,11 +167,39 @@ export interface BaselineParameter {
   options: { code: string; label: string; rank: number }[];
 }
 
+export type Gender = "male" | "female" | "other" | "unknown";
+export type Relationship =
+  | "spouse"
+  | "son"
+  | "daughter"
+  | "sibling"
+  | "parent"
+  | "other_family"
+  | "friend"
+  | "caregiver";
+export type CheckInWindowCode = "morning" | "midday" | "evening";
+export type PrivacyLaw = "DPDP-2023" | "HIPAA";
+
+export interface CheckInWindow {
+  code: CheckInWindowCode;
+  label: string;
+  start: string;
+  end: string;
+}
+
 export interface EnrollmentOptions {
   procedures: { procedure_code: string; procedure_name: string; observation_days: number; ruleset_version: string }[];
   languages: Language[];
   baseline_parameters: BaselineParameter[];
+  checkin_windows: CheckInWindow[];
+  privacy_law: PrivacyLaw;
   today: string;
+}
+
+export interface EmergencyContactInput {
+  name: string;
+  relationship: Relationship;
+  phone_e164: string;
 }
 
 export interface EnrollmentRequest {
@@ -180,11 +208,19 @@ export interface EnrollmentRequest {
   phone_e164: string;
   language_code: Language;
   date_of_birth: string | null;
+  gender: Gender;
+  address: { line: string; city: string | null; district: string; state: string | null; postal_code: string };
+  alt_phone_e164: string | null;
+  email: string | null;
+  emergency_contacts: EmergencyContactInput[];
   procedure_code: string;
   surgery_date: string;
   discharge_date: string;
+  checkin_window: CheckInWindowCode;
   consent_version: string;
   consent_confirmed: true;
+  data_processing_consent: true;
+  contact_sharing_consent: boolean;
   baseline: Record<string, number | string>;
 }
 

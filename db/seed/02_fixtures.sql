@@ -94,20 +94,45 @@ create temporary table fx_expect (
 
 -- ---------------------------------------------------------------------
 -- 3. The twelve fixtures
+--    Names are invented; the bracketed part names the scenario each tests.
 -- ---------------------------------------------------------------------
 insert into fx_patient (fixture, display_name, last_day, base_hr, purpose) values
- ('f01_smooth',        'Fixture Smooth Recovery',   21, 72, 'Control. Must never escalate.'),
- ('f02_slow_burn',     'Fixture Slow Burn',         21, 72, 'Infection from day 7. Arms fever_returned.'),
- ('f03_dvt',           'Fixture Sudden Clot',       21, 74, 'Binary override, day 4.'),
- ('f04_pe',            'Fixture Breathless',        21, 76, 'Emergency override, day 6.'),
- ('f05_erratic',       'Fixture Erratic Reporter',  21, 70, 'Gaps and noise, recovering.'),
- ('f06_dropout',       'Fixture Drop Out',           5, 73, 'Stops day 5. Absence sweep.'),
- ('f07_combination',   'Fixture Combination Creep', 21, 70, 'No band 3. Weighted total escalates.'),
- ('f08_early_fever',   'Fixture Early Low Fever',   21, 80, 'Expected day 0-3 picture.'),
- ('f09_collect_score', 'Fixture Collect Not Score', 21, 72, 'Drainage from day 2: collected, scored from 5.'),
- ('f11_one_day_spike', 'Fixture One Day Spike',     21, 72, 'Hysteresis must hold the tier.'),
- ('f12_mobility_drop', 'Fixture Mobility Drop',     21, 72, 'Steps halve from personal best, day 12.'),
- ('f13_out_of_window', 'Fixture Out Of Window',     21, 72, 'Nurse enters knee_bend on day 5, outside collect.');
+ ('f01_smooth',        'Lakshmi Narayanan [Smooth Recovery]', 21, 72, 'Control. Must never escalate.'),
+ ('f02_slow_burn',     'Rajesh Kumar [Slow Burn]',            21, 72, 'Infection from day 7. Arms fever_returned.'),
+ ('f03_dvt',           'Meena Sundaram [Sudden Clot]',        21, 74, 'Binary override, day 4.'),
+ ('f04_pe',            'Karthik Subramanian [Breathless]',    21, 76, 'Emergency override, day 6.'),
+ ('f05_erratic',       'Priya Venkatesh [Erratic Reporter]',  21, 70, 'Gaps and noise, recovering.'),
+ ('f06_dropout',       'Suresh Babu [Drop Out]',               5, 73, 'Stops day 5. Absence sweep.'),
+ ('f07_combination',   'Kavitha Ramesh [Combination Creep]',  21, 70, 'No band 3. Weighted total escalates.'),
+ ('f08_early_fever',   'Anand Krishnan [Early Low Fever]',    21, 80, 'Expected day 0-3 picture.'),
+ ('f09_collect_score', 'Deepa Iyer [Collect Not Score]',      21, 72, 'Drainage from day 2: collected, scored from 5.'),
+ ('f11_one_day_spike', 'Harish Patel [One Day Spike]',        21, 72, 'Hysteresis must hold the tier.'),
+ ('f12_mobility_drop', 'Sunita Sharma [Mobility Drop]',       21, 72, 'Steps halve from personal best, day 12.'),
+ ('f13_out_of_window', 'Ganesh Moorthy [Out Of Window]',      21, 72, 'Nurse enters knee_bend on day 5, outside collect.');
+
+-- ---- who they are, where they live, and the first person to call
+create temporary table fx_person (
+    fixture       text primary key,
+    gender        text,
+    street        text,
+    postal_code   text,
+    contact_name  text,
+    relationship  text
+) on commit drop;
+
+insert into fx_person values
+ ('f01_smooth',        'female', '12 Race Course Road',            '641018', 'Arun Narayanan',   'son'),
+ ('f02_slow_burn',     'male',   '45 Avinashi Road, Peelamedu',    '641004', 'Sangeetha Rajesh', 'spouse'),
+ ('f03_dvt',           'female', '8 DB Road, RS Puram',            '641002', 'Vignesh Sundaram', 'son'),
+ ('f04_pe',            'male',   '22 Sathy Road, Ganapathy',       '641006', 'Divya Karthik',    'spouse'),
+ ('f05_erratic',       'female', '5 Trichy Road, Singanallur',     '641005', 'Venkatesh Rao',    'spouse'),
+ ('f06_dropout',       'male',   '31 Mettupalayam Road',           '641043', 'Anitha Suresh',    'daughter'),
+ ('f07_combination',   'female', '17 Cross Cut Road, Gandhipuram', '641012', 'Ramesh Kumar',     'spouse'),
+ ('f08_early_fever',   'male',   '64 Saibaba Colony',              '641011', 'Revathi Anand',    'spouse'),
+ ('f09_collect_score', 'female', '9 Thadagam Road',                '641025', 'Karthika Iyer',    'daughter'),
+ ('f11_one_day_spike', 'male',   '3 Nanjundapuram Road',           '641036', 'Nisha Patel',      'daughter'),
+ ('f12_mobility_drop', 'female', '27 Kalapatti Road',              '641048', 'Amit Sharma',      'son'),
+ ('f13_out_of_window', 'male',   '11 Vadavalli Main Road',         '641041', 'Selvi Ganesh',     'spouse');
 
 -- ---- numeric curves (spo2 runs to day 21, inside its collect window of 0-42)
 insert into fx_curve (fixture, parameter_code, day_from, day_to, start_val, end_val, noise) values
@@ -259,14 +284,22 @@ delete from txn.patient_episode e
 
 delete from txn.patient where mrn like 'FX-%';
 
-insert into txn.patient (patient_id, hospital_id, mrn, patient_name, phone_e164, language_code)
+insert into txn.patient (patient_id, hospital_id, mrn, patient_name, phone_e164, language_code,
+                         gender, address_line, address_city, address_district, address_state, address_postal_code)
 select md5(f.fixture)::uuid, h.hospital_id,
        'FX-' || upper(substr(f.fixture, 2, 2)),
        f.display_name,
        '+9198' || lpad((abs(hashtext(f.fixture)) % 100000000)::text, 8, '0'),
-       'en'
+       'en',
+       x.gender, x.street, 'Coimbatore', 'Coimbatore', 'Tamil Nadu', x.postal_code
 from fx_patient f
+join fx_person x on x.fixture = f.fixture
 cross join (select hospital_id from meta.hospital where hospital_code = 'CBE-01') h;
+
+insert into txn.patient_contact (patient_id, priority, contact_name, relationship, phone_e164)
+select md5(x.fixture)::uuid, 1, x.contact_name, x.relationship,
+       '+9197' || lpad((abs(hashtext(x.fixture || ':contact')) % 100000000)::text, 8, '0')
+from fx_person x;
 
 -- enrolled_by is a foreign key to meta.admin_user. Fixtures are loaded by
 -- a script, not enrolled by a clinician, so it is left null.
@@ -287,13 +320,19 @@ cross join (select ruleset_id from meta.ruleset where version = '1.0.0') r;
 insert into txn.episode_baseline (episode_id, parameter_id, value_num, value_bool, value_code)
 select md5(f.fixture || ':ep')::uuid, p.parameter_id, v.num, null, v.code
 from fx_patient f
+join fx_person x on x.fixture = f.fixture
 cross join lateral (values
     ('temp_c',    f.base_temp,          null),
     ('hr',        f.base_hr::numeric,   null),
     ('spo2',      f.base_spo2::numeric, null),
     ('pain',      f.base_pain::numeric, null),
     ('knee_bend', null::numeric,        'chair'),
-    ('walk_aid',  null::numeric,        'walker')
+    ('walk_aid',  null::numeric,        'walker'),
+    ('height_cm', round(case x.gender when 'female' then 154 else 167 end
+                        + txn.fx_noise(f.fixture || ':height', 6)),     null),
+    ('weight_kg', round(72 + txn.fx_noise(f.fixture || ':weight', 14), 1), null),
+    ('bp_sys',    round(132 + txn.fx_noise(f.fixture || ':bp_sys', 12)),   null),
+    ('bp_dia',    round(82 + txn.fx_noise(f.fixture || ':bp_dia', 7)),     null)
 ) as v(pcode, num, code)
 join meta.parameter p on p.parameter_code = v.pcode;
 

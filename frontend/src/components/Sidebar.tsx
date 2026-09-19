@@ -5,13 +5,20 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { initials } from "@/lib/triage";
 
+export interface NavItem {
+  href: string;
+  icon: string;
+  label: string;
+}
+
 interface SidebarProps {
   fullName: string;
   role: string;
   onSignOut: () => void;
+  nav?: NavItem[];
 }
 
-const NAV = [
+const CLINICAL_NAV: NavItem[] = [
   { href: "/", icon: "grid_view", label: "Dashboard" },
   { href: "/patients", icon: "personal_injury", label: "Patients" },
   { href: "/alerts", icon: "crisis_alert", label: "Alerts" },
@@ -35,7 +42,7 @@ function isActive(pathname: string, href: string): boolean {
   return href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
 }
 
-export default function Sidebar({ fullName, role, onSignOut }: SidebarProps) {
+export default function Sidebar({ fullName, role, onSignOut, nav = CLINICAL_NAV }: SidebarProps) {
   const pathname = usePathname();
 
   return (
@@ -48,7 +55,7 @@ export default function Sidebar({ fullName, role, onSignOut }: SidebarProps) {
         </div>
 
         <nav aria-label="Main" className="flex flex-col items-center gap-space-xs w-full">
-          {NAV.map((item) => {
+          {nav.map((item) => {
             const active = isActive(pathname, item.href);
             return (
               <Link

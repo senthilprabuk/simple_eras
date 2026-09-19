@@ -9,7 +9,7 @@ async def test_summary_pairs_discharge_baseline_with_latest_check_in(client, db,
     assert res.status_code == 200
     data = res.json()
 
-    assert data["patient_name"] == "Fixture Smooth Recovery"
+    assert data["patient_name"] == "Lakshmi Narayanan [Smooth Recovery]"
     assert data["mrn"] == "FX-01"
     assert data["phone_e164"].startswith("+")
     assert data["hospital_name"] == "St. Mary's Orthopedic Center"
@@ -28,6 +28,23 @@ async def test_summary_pairs_discharge_baseline_with_latest_check_in(client, db,
     assert readings["walk_aid"]["current"] == "Walking stick"
     assert readings["calf_pain"]["current"] is False
     assert readings["calf_pain"]["concerning_when_true"] is True
+
+
+async def test_summary_carries_who_to_call_and_where_the_patient_lives(client, db, nurse_headers):
+    episode_id = await episode_for_mrn(db, "FX-01")
+    data = (await client.get(f"/api/v1/episodes/{episode_id}/summary", headers=nurse_headers)).json()
+
+    assert data["gender"] == "female"
+    assert [(c["name"], c["relationship"]) for c in data["emergency_contacts"]] == [("Arun Narayanan", "son")]
+    assert data["emergency_contacts"][0]["phone_e164"] != data["phone_e164"]
+    assert (data["address"]["line"], data["address"]["postal_code"]) == ("12 Race Course Road", "641018")
+    assert (data["checkin_window_start"], data["checkin_window_end"]) == ("08:00:00", "10:00:00")
+
+    body = data["body"]
+    assert body["bmi"] == round(body["weight_kg"] / (body["height_cm"] / 100) ** 2, 1)
+    assert body["bp_systolic"] > body["bp_diastolic"]
+    # Fixtures are loaded by script, not enrolled, so no consent decisions were recorded.
+    assert data["consents"] == []
 
 
 async def test_summary_of_another_hospitals_patient_is_not_found(client, db, h2_headers):
