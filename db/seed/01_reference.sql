@@ -2,7 +2,7 @@
 --  Reference data — the minimum a working installation needs
 --
 --  One hospital, one procedure, the parameter registry, and the approved
---  TKR ruleset with all thirteen parameters bound to it.
+--  TKR ruleset with all twelve parameters bound to it.
 --
 --  Requires: db/schema/*.sql
 --  Idempotent: safe to re-run. Parameter bindings are upserted so window
@@ -48,7 +48,6 @@ values
     ('calf_pain',   'Calf pain or swelling',        'boolean', null, null, null, 0, true),
     ('breathless',  'Breathlessness or chest pain', 'boolean', null, null, null, 0, true),
     ('drainage',    'Wound still leaking',          'boolean', null, null, null, 0, true),
-    ('redness',     'Redness spreading',            'boolean', null, null, null, 0, true),
     ('chills',      'Shivering or chills',          'boolean', null, null, null, 0, true),
     ('weight_bear', 'Harder to bear weight',        'boolean', null, null, null, 0, true),
     ('knee_bend',   'Knee bend reached',            'ordinal', null, null, null, 0, null),
@@ -81,7 +80,7 @@ on conflict (procedure_id, version) do nothing;
 
 
 -- ---------------------------------------------------------------------
--- Parameter bindings — all thirteen, with both windows
+-- Parameter bindings — all twelve, with both windows
 --
 --   Two rows where the windows deliberately differ:
 --     drainage : ask from day 0, alert from day 5. Duration of drainage
@@ -128,9 +127,6 @@ join (values
     ('drainage',      8,'checks',    0, 28,  5, 28, 2,
      '{"binary_score":2}',
      'Is fluid still leaking from your wound?'),
-    ('redness',       9,'checks',    0, 28,  0, 28, 3,
-     '{"binary_score":2}',
-     'Is the redness around your wound spreading wider than last time?'),
     ('chills',       10,'checks',    0, 28,  0, 28, 3,
      '{"binary_score":3}',
      'Have you had shivering or shaking chills?'),

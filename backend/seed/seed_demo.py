@@ -4,10 +4,10 @@ ERAS Clinical Remote Monitoring - Demo Seed Script
 Populates:
   1. Hospital branding ("St. Mary's Orthopedic Center", Coimbatore)
   2. 3 Hospital Admin Accounts (Nurse, Surgeon, Superadmin)
-  3. Clinical evaluations & alerts across all 13 existing fixture patients:
+  3. Clinical evaluations & alerts across all 12 existing fixture patients:
      - 1 Emergency Alert (FX-03 Sudden Clot)
      - 2 Critical Alerts (FX-02 Slow Burn, FX-07 Combination Creep)
-     - 3 Review Alerts (FX-10 Stalled Flexion, FX-08 Early Low Fever, FX-12 Mobility Drop)
+     - 2 Review Alerts (FX-08 Early Low Fever, FX-12 Mobility Drop)
      - 1 Missed Check-in Alert (FX-06 Drop Out)
      - 6 Quiet Cohort Normal Patients (FX-01, FX-04, FX-05, FX-09, FX-11, FX-13)
 """
@@ -26,14 +26,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.db.session import async_session_factory
 from app.core.security import get_password_hash
 
-async def seed_demo():
+async def seed_demo(session_factory=None):
     print("================================================================")
     print("        ERAS DEMO CLINICAL SEED SCRIPT (PAGE 1)                ")
     print("================================================================\n")
 
     now = datetime.now(timezone.utc)
 
-    async with async_session_factory() as session:
+    async with (session_factory or async_session_factory)() as session:
         # 1. Update Hospital 1 name
         print("[*] 1. Updating hospital details for ID 1:")
         await session.execute(text("""
@@ -179,36 +179,7 @@ async def seed_demo():
             """), {"aid": alert_id, "eid": p["episode_id"], "evid": eval_id, "raised_at": raised_at})
             print(f"  [+] [CRITICAL]   {p['mrn']} ({p['patient_name']}): Extension block & Night pain flare (2m ago, open)")
 
-        # --- ROW 4: REVIEW (FX-10 Stalled Flexion / E. Alverez equivalent - Acknowledged) ---
-        p = patient_map.get("FX-10")
-        if p:
-            eval_id = uuid4()
-            alert_id = uuid4()
-            raised_at = now - timedelta(minutes=24)
-            ack_at = now - timedelta(minutes=10)
-            reasons = [
-                {"name": "analgesic_nausea", "score": 1, "weight": 1, "detail": "Analgesic intolerance / nausea"},
-                {"name": "rom_deficit", "score": 2, "weight": 2, "detail": "ROM flexion deficit at 65°"}
-            ]
-            await session.execute(text("""
-                INSERT INTO txn.check_in_evaluation (
-                    evaluation_id, episode_id, ruleset_id, day_after_discharge,
-                    tier, total_score, is_override, reasons, reason_key, evaluated_at
-                ) VALUES (
-                    :evid, :eid, :rid, 14, 'review', 7, false, CAST(:reasons AS jsonb), 'reason_nausea_rom', :raised_at
-                );
-            """), {"evid": eval_id, "eid": p["episode_id"], "rid": p["ruleset_id"], "reasons": json.dumps(reasons), "raised_at": raised_at})
-
-            await session.execute(text("""
-                INSERT INTO txn.alert (
-                    alert_id, episode_id, evaluation_id, tier, reason_key, status, raised_at, notified_at, acknowledged_at, acknowledged_by
-                ) VALUES (
-                    :aid, :eid, :evid, 'review', 'reason_nausea_rom', 'acknowledged', :raised_at, :raised_at, :ack_at, :ack_by
-                );
-            """), {"aid": alert_id, "eid": p["episode_id"], "evid": eval_id, "raised_at": raised_at, "ack_at": ack_at, "ack_by": admin_sarah_id})
-            print(f"  [+] [REVIEW]     {p['mrn']} ({p['patient_name']}): ROM deficit & Nausea (Ack by Nurse Sarah 10m ago)")
-
-        # --- ROW 5: REVIEW (FX-08 Early Low Fever / D. Gallagher equivalent - Acknowledged) ---
+        # --- ROW 4: REVIEW (FX-08 Early Low Fever / D. Gallagher equivalent - Acknowledged) ---
         p = patient_map.get("FX-08")
         if p:
             eval_id = uuid4()
@@ -236,7 +207,7 @@ async def seed_demo():
             """), {"aid": alert_id, "eid": p["episode_id"], "evid": eval_id, "raised_at": raised_at, "ack_at": ack_at, "ack_by": admin_mehta_id})
             print(f"  [+] [REVIEW]     {p['mrn']} ({p['patient_name']}): Erythema spreading 1cm (Ack by Dr. Mehta)")
 
-        # --- ROW 6: REVIEW (FX-12 Mobility Drop / A. Chen equivalent - Acknowledged) ---
+        # --- ROW 5: REVIEW (FX-12 Mobility Drop / A. Chen equivalent - Acknowledged) ---
         p = patient_map.get("FX-12")
         if p:
             eval_id = uuid4()
@@ -264,7 +235,7 @@ async def seed_demo():
             """), {"aid": alert_id, "eid": p["episode_id"], "evid": eval_id, "raised_at": raised_at, "ack_at": ack_at, "ack_by": admin_sarah_id})
             print(f"  [+] [REVIEW]     {p['mrn']} ({p['patient_name']}): Reported fall without knee impact (Ack by Nurse Sarah)")
 
-        # --- ROW 7: MISSED (FX-06 Drop Out / B. Kowalski equivalent - Evaluated Today) ---
+        # --- ROW 6: MISSED (FX-06 Drop Out / B. Kowalski equivalent - Evaluated Today) ---
         p = patient_map.get("FX-06")
         if p:
             eval_id = uuid4()
@@ -315,7 +286,7 @@ async def seed_demo():
     print("                    SEEDING COMPLETE                            ")
     print("================================================================")
     print("Hospital:       St. Mary's Orthopedic Center (ID: 1, Code: CBE-01)")
-    print("Active Cohort:  13 Enrolled Patients (7 Alerts: 1 Emergency, 2 Critical, 3 Review, 1 Missed, 6 Normal)")
+    print("Active Cohort:  12 Enrolled Patients (6 Alerts: 1 Emergency, 2 Critical, 2 Review, 1 Missed, 6 Normal)")
     print("\nDemo Login Credentials:")
     print("  1. Nurse Admin:   nurse.sarah@stmarys.org  |  password123")
     print("  2. Surgeon Admin: dr.mehta@stmarys.org     |  password123")

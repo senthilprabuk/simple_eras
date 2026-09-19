@@ -1,5 +1,5 @@
 -- =====================================================================
---  Fixture patients — 13 synthetic recovery timelines
+--  Fixture patients — 12 synthetic recovery timelines
 --
 --  Each fixture exercises one behaviour of the rules engine: a control
 --  that must never escalate, a slow-burn infection, a DVT override, a PE
@@ -10,14 +10,17 @@
 --
 --  Deterministic and re-runnable: noise is hash-derived rather than
 --  random(), and every run deletes and rebuilds the FX-* patients.
---  Dates are anchored to current_date, so each run places the fixtures
---  at day 21 — re-run it to reset them after the calendar has moved on.
+--  Dates are anchored to today in the hospital's own timezone — the same
+--  calendar the API uses for post-op day — so each run places the fixtures
+--  at day 21. Re-run it to reset them after the calendar has moved on.
 --
 --  Re-running removes the fixture episodes, which cascades to their
 --  evaluations and alerts. Re-run backend/seed/seed_demo.py afterwards
 --  if you need the demo alerts back.
 --
---  13 patients, 259 check-ins.
+--  12 patients, 237 check-ins. Fixture codes are stable identifiers, so
+--  the retired f10 leaves a gap in the FX- numbering rather than
+--  renumbering the fixtures after it.
 --  Verify the load with db/seed/verify_fixtures.sql.
 -- =====================================================================
 
@@ -69,6 +72,12 @@ create temporary table fx_discrete (
 
 create temporary table fx_gap (fixture text, day int) on commit drop;
 
+-- "today" for the fixture hospital, in its own timezone
+create temporary table fx_clock on commit drop as
+select (now() at time zone h.timezone)::date as today, h.timezone
+from meta.hospital h
+where h.hospital_code = 'CBE-01';
+
 -- submissions that did not come from the patient's own app
 create temporary table fx_source (fixture text, day int, source text) on commit drop;
 
@@ -84,7 +93,7 @@ create temporary table fx_expect (
 
 
 -- ---------------------------------------------------------------------
--- 3. The thirteen fixtures
+-- 3. The twelve fixtures
 -- ---------------------------------------------------------------------
 insert into fx_patient (fixture, display_name, last_day, base_hr, purpose) values
  ('f01_smooth',        'Fixture Smooth Recovery',   21, 72, 'Control. Must never escalate.'),
@@ -96,7 +105,6 @@ insert into fx_patient (fixture, display_name, last_day, base_hr, purpose) value
  ('f07_combination',   'Fixture Combination Creep', 21, 70, 'No band 3. Weighted total escalates.'),
  ('f08_early_fever',   'Fixture Early Low Fever',   21, 80, 'Expected day 0-3 picture.'),
  ('f09_collect_score', 'Fixture Collect Not Score', 21, 72, 'Drainage from day 2: collected, scored from 5.'),
- ('f10_stalled_bend',  'Fixture Stalled Flexion',   21, 71, 'Safety clean, progress stalls.'),
  ('f11_one_day_spike', 'Fixture One Day Spike',     21, 72, 'Hysteresis must hold the tier.'),
  ('f12_mobility_drop', 'Fixture Mobility Drop',     21, 72, 'Steps halve from personal best, day 12.'),
  ('f13_out_of_window', 'Fixture Out Of Window',     21, 72, 'Nurse enters knee_bend on day 5, outside collect.');
@@ -160,12 +168,6 @@ insert into fx_curve (fixture, parameter_code, day_from, day_to, start_val, end_
  ('f09_collect_score','pain',   0,21, 6,    3,    0.5),
  ('f09_collect_score','steps',  0,21, 80,   1000, 60),
 
- ('f10_stalled_bend','temp_c', 0,21, 37.2, 36.8, 0.10),
- ('f10_stalled_bend','hr',     0,21, 84,   72,   3.0),
- ('f10_stalled_bend','spo2',   0,21, 96,   98,   0.8),
- ('f10_stalled_bend','pain',   0,21, 6,    3,    0.5),
- ('f10_stalled_bend','steps',  0,21, 70,   500,  40),
-
  ('f11_one_day_spike','temp_c', 0,21, 37.2, 36.8, 0.10),
  ('f11_one_day_spike','hr',     0,21, 84,   74,   3.0),
  ('f11_one_day_spike','spo2',   0,21, 96,   98,   0.8),
@@ -189,19 +191,15 @@ insert into fx_curve (fixture, parameter_code, day_from, day_to, start_val, end_
 -- ---- boolean and ordinal overrides
 insert into fx_discrete (fixture, parameter_code, day_from, day_to, value_bool, value_code) values
  ('f02_slow_burn','drainage',  6,21, true, null),
- ('f02_slow_burn','redness',   9,21, true, null),
  ('f02_slow_burn','chills',   11,21, true, null),
  ('f03_dvt','calf_pain',       4,21, true, null),
  ('f04_pe','breathless',       6, 8, true, null),
- ('f07_combination','redness', 8,21, true, null),
  -- f09: reported from day 2, well before score_from_day = 5
  ('f09_collect_score','drainage', 2,21, true, null),
  -- progress milestones
  ('f01_smooth','knee_bend',   14,16, null, 'chair'), ('f01_smooth','knee_bend',  17,21, null, 'car'),
  ('f01_smooth','walk_aid',    14,17, null, 'crutch'),('f01_smooth','walk_aid',   18,21, null, 'cane'),
  ('f05_erratic','knee_bend',  14,21, null, 'car'),   ('f05_erratic','walk_aid',  14,21, null, 'cane'),
- ('f10_stalled_bend','knee_bend',14,21, null, 'chair'),
- ('f10_stalled_bend','walk_aid', 14,21, null, 'walker'),
  ('f12_mobility_drop','knee_bend',14,21, null, 'car'),
  ('f12_mobility_drop','walk_aid', 14,21, null, 'cane'),
  -- f13: nurse types a knee bend on day 5. collect_from_day is 14, so this
@@ -233,14 +231,12 @@ insert into fx_expect
   'Gaps must not be read as deterioration.'),
  ('f06_dropout',          6,   7,'missed',    false, array['no_submission'],
   'Raised by the absence sweep, never by ingest.'),
- ('f07_combination',      9,  12,'critical',  false, array['redness','pain','temperature'],
+ ('f07_combination',      9,  12,'critical',  false, array['pain','temperature'],
   'Weighted total only. No signal reaches band 3.'),
  ('f08_early_fever',   null,null,'normal',    true,  null,
   'Day-banded corridor must absorb 37.9 and pain 7 on days 0-3.'),
  ('f09_collect_score',    5,   6,'review',    false, array['wound_drainage'],
   'Drainage rows exist from day 2. No drainage signal before day 5.'),
- ('f10_stalled_bend',  null,null,'normal',    true,  array['knee_bend'],
-  'Progress signal present; safety tier stays normal.'),
  ('f11_one_day_spike', null,null,'review',    true,  array['pain_rising'],
   'Hysteresis holds a one-day blip below critical.'),
  ('f12_mobility_drop', null,null,'review',    true,  array['mobility_regression'],
@@ -280,9 +276,10 @@ insert into txn.patient_episode
      consent_version, consent_at, enrolled_by, status)
 select md5(f.fixture || ':ep')::uuid, md5(f.fixture)::uuid,
        h.hospital_id, sp.procedure_id, r.ruleset_id,
-       current_date - 25, current_date - 21, current_date + 63,
+       c.today - 25, c.today - 21, c.today + 63,
        'v1', now() - interval '25 days', null, 'active'
 from fx_patient f
+cross join fx_clock c
 cross join (select hospital_id from meta.hospital where hospital_code = 'CBE-01') h
 cross join (select procedure_id from meta.surgical_procedure where procedure_code = 'TKR') sp
 cross join (select ruleset_id from meta.ruleset where version = '1.0.0') r;
@@ -316,13 +313,14 @@ insert into txn.patient_check_in
 select md5(s.fixture || ':ci:' || s.day)::uuid,
        md5(s.fixture || ':ep')::uuid,
        s.day,
-       (current_date - 21 + s.day)::timestamptz + interval '8 hours 12 minutes',
-       (current_date - 21 + s.day)::timestamptz + interval '8 hours 9 minutes',
+       ((c.today - 21 + s.day) + time '08:12') at time zone c.timezone,
+       ((c.today - 21 + s.day) + time '08:09') at time zone c.timezone,
        coalesce(src.source, 'patient'),
        'fx-' || s.fixture || '-' || s.day,
        case when s.day <= 14 then
             'wounds/' || s.fixture || '/day' || lpad(s.day::text, 2, '0') || '.jpg' end
 from submitted s
+cross join fx_clock c
 left join fx_source src on src.fixture = s.fixture and src.day = s.day;
 
 
