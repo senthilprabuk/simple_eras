@@ -21,6 +21,8 @@ create table txn.patient (
     updated_at    timestamptz not null default now(),
 
     unique (hospital_id, mrn),
+    -- target for patient_episode's same-hospital foreign key
+    constraint patient_id_hospital_unique unique (patient_id, hospital_id),
     constraint patient_language_known check (language_code in ('en','ta','hi')),
     constraint patient_phone_e164     check (phone_e164 ~ '^\+[1-9][0-9]{7,14}$')
 );
@@ -52,7 +54,11 @@ create table txn.patient_episode (
 
     constraint episode_status_known    check (status in ('active','completed','withdrawn')),
     constraint episode_dates_ordered   check (discharge_date >= surgery_date),
-    constraint episode_end_after_disch check (monitoring_ends_on > discharge_date)
+    constraint episode_end_after_disch check (monitoring_ends_on > discharge_date),
+    -- an episode may only belong to its patient's own hospital, so the
+    -- tenant a query filters on can never disagree between the two tables
+    constraint episode_patient_same_hospital
+        foreign key (patient_id, hospital_id) references txn.patient (patient_id, hospital_id)
 );
 
 -- a patient cannot be in two active monitoring programmes at once
@@ -244,5 +250,10 @@ create table txn.alert_notification (
 );
 
 create index notification_by_alert on txn.alert_notification (alert_id);
+
+-- the notification dispatcher's work queue
+create index notification_queued
+    on txn.alert_notification (created_at)
+    where status = 'queued';
 
 commit;

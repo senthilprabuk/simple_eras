@@ -5,14 +5,15 @@
 --    db/schema/01_meta.sql
 --    db/schema/02_txn.sql
 --    db/schema/03_views.sql
+--    db/schema/04_security.sql
 --    db/seed/01_reference.sql
 --    db/seed/02_fixtures.sql        (optional: synthetic test patients)
 --
---  This is the current shape of the schema. It already includes what
---  migrations/001_admin_user_and_fk_cleanup.sql applies, so do NOT run
---  that migration against a database built from these files: it drops
---  and re-adds the attribution columns, which would erase their data.
---  db/migrations/ is only for databases created before this baseline.
+--  This is the current shape of the schema, including the effect of every
+--  file in db/migrations/. 04_security.sql records those migrations in
+--  meta.schema_migration, so db/migrate.py never re-runs them here.
+--  Migration 001 drops and re-adds the attribution columns, so running it
+--  by hand against these tables would erase their data.
 -- =====================================================================
 
 begin;
@@ -21,6 +22,16 @@ create schema if not exists meta;
 create schema if not exists txn;
 
 -- gen_random_uuid() is built into PostgreSQL 13+, so no pgcrypto needed.
+
+
+-- ---------------------------------------------------------------------
+-- schema_migration   (which files in db/migrations/ have been applied)
+-- ---------------------------------------------------------------------
+create table meta.schema_migration (
+    version     text        primary key,       -- file prefix, e.g. '003'
+    name        text        not null,
+    applied_at  timestamptz not null default now()
+);
 
 
 -- ---------------------------------------------------------------------
@@ -75,6 +86,9 @@ create table meta.admin_user (
 
     constraint admin_user_role_known
         check (role in ('admin', 'superadmin')),
+    -- stored lowercase so the unique constraint below is case-insensitive
+    constraint admin_user_email_lowercase
+        check (email = lower(email)),
     constraint admin_user_hospital_email_unique
         unique (hospital_id, email)
 );

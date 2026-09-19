@@ -12,6 +12,10 @@
 --        - Add hospital_id for multi-tenant query filtering
 --        - Add acknowledged boolean, acknowledged_at, acknowledged_by_name
 --        - Add patient_id, mrn, procedure_code
+--
+-- WARNING: destructive. It drops and re-adds acknowledged_by, resolved_by
+-- and enrolled_by, discarding their contents. Apply it only through
+-- db/migrate.py, which records it and never runs it twice.
 -- =====================================================================
 
 BEGIN;

@@ -2,19 +2,23 @@
 --  Views
 --
 --  Requires: 01_meta.sql, 02_txn.sql
---  Safe to re-run on its own after changing a view definition.
+--  Safe to re-run on its own after changing a view definition. New
+--  columns must be appended at the end: CREATE OR REPLACE VIEW cannot
+--  reorder or drop existing ones.
 -- =====================================================================
 
 begin;
 
 -- ---------------------------------------------------------------------
 -- v_alert_queue   (the nurse triage queue)
---   hospital_id is selected so the API can scope every read to the
---   caller's tenant. Callers must still apply their own ORDER BY:
---   PostgreSQL does not guarantee that a view's ordering survives an
---   outer query that adds predicates.
+--   security_invoker makes the view evaluate row-level security as the
+--   caller, so a tenant-scoped session only ever sees its own hospital.
+--   Callers must still apply their own ORDER BY: PostgreSQL does not
+--   guarantee that a view's ordering survives an outer query that adds
+--   predicates.
 -- ---------------------------------------------------------------------
-create or replace view txn.v_alert_queue as
+create or replace view txn.v_alert_queue
+with (security_invoker = true) as
 select
     a.alert_id,
     a.tier,
@@ -33,7 +37,8 @@ select
     h.hospital_name,
     sp.procedure_code,
     ev.day_after_discharge,
-    ev.reasons
+    ev.reasons,
+    h.ack_window_secs
 from txn.alert a
 join txn.check_in_evaluation ev  on ev.evaluation_id = a.evaluation_id
 join txn.patient_episode e       on e.episode_id     = a.episode_id
