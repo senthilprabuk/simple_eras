@@ -1,7 +1,7 @@
 /** The platform admin area's API: hospitals and scoring rulesets across every tenant. */
 
 import { request } from "@/lib/api";
-import type { PrivacyLaw } from "@/lib/clinicalApi";
+import type { PrivacyLaw, RuleDirection } from "@/lib/clinicalApi";
 
 export type RulesetStatus = "draft" | "approved" | "retired";
 export type DisplaySection = "readings" | "checks" | "progress";
@@ -101,6 +101,7 @@ export interface RulesetBinding extends BindingInput {
   parameter_type: "numeric" | "boolean" | "ordinal";
   unit: string | null;
   scoring_summary: string;
+  direction: RuleDirection | null;
 }
 
 export interface AvailableParameter {
@@ -115,6 +116,9 @@ export interface RulesetDetail extends RulesetVersion {
   procedure_code: string;
   procedure_name: string;
   observation_days: number;
+  /** Signals that read every measure at once rather than belonging to one. */
+  composite_config: Record<string, unknown>;
+  composite_summary: string[];
   bindings: RulesetBinding[];
   available_parameters: AvailableParameter[];
 }
@@ -139,7 +143,9 @@ export const startDraft = (fromId: number, version: string, notes: string | null
   request<RulesetDetail>(`${BASE}/rulesets/${fromId}/drafts`, json("POST", { version, notes }));
 export const updateDraft = (
   id: number,
-  changes: Partial<Pick<RulesetVersion, "review_at" | "critical_at" | "max_points_per_parameter" | "notes">>,
+  changes: Partial<Pick<RulesetVersion, "review_at" | "critical_at" | "max_points_per_parameter" | "notes">> & {
+    composite_config?: Record<string, unknown>;
+  },
 ) => request<RulesetDetail>(`${BASE}/rulesets/${id}`, json("PATCH", changes));
 export const saveBinding = (id: number, code: string, binding: BindingInput) =>
   request<RulesetDetail>(`${BASE}/rulesets/${id}/parameters/${code}`, json("PUT", binding));

@@ -213,6 +213,9 @@ create table meta.ruleset (
     review_at                smallint    not null,              -- weighted-total cutoffs
     critical_at              smallint    not null,
     max_points_per_parameter smallint    not null default 6,
+    -- signals that read every measure at once rather than belonging to one:
+    -- {"trends": [{"name": ..., "detector": "streak", ...}]}
+    composite_config         jsonb       not null default '{}'::jsonb,
     status                   text        not null default 'draft',
     approved_by              text,
     approved_at              timestamptz,
@@ -226,7 +229,9 @@ create table meta.ruleset (
         check (critical_at > review_at and review_at > 0),
     constraint ruleset_approved_has_approver
         check (status <> 'approved'
-               or (approved_by is not null and approved_at is not null))
+               or (approved_by is not null and approved_at is not null)),
+    constraint ruleset_composite_is_object
+        check (jsonb_typeof(composite_config) = 'object')
 );
 
 -- at most one approved ruleset per procedure at any time
@@ -244,10 +249,10 @@ begin
     end if;
     if old.status = 'approved' and new.status = 'retired'
        and (new.procedure_id, new.version, new.review_at, new.critical_at, new.max_points_per_parameter,
-            new.approved_by, new.approved_at, new.notes)
+            new.approved_by, new.approved_at, new.notes, new.composite_config)
            is not distinct from
            (old.procedure_id, old.version, old.review_at, old.critical_at, old.max_points_per_parameter,
-            old.approved_by, old.approved_at, old.notes)
+            old.approved_by, old.approved_at, old.notes, old.composite_config)
     then
         return new;
     end if;
@@ -283,7 +288,7 @@ create table meta.procedure_parameter (
     score_to_day     smallint not null,
     is_mandatory     boolean  not null default false,
     parameter_weight smallint not null,
-    scoring_config   jsonb    not null,        -- bands / bands_by_day / binary_score / detector
+    scoring_config   jsonb    not null,        -- direction / bands / bands_by_day / binary_score / detector
     question_text    text,                     -- patient-facing wording
     nurse_script     text,                     -- what to ask when this rule fires
 
@@ -294,6 +299,11 @@ create table meta.procedure_parameter (
     constraint ppm_weight_sane      check (parameter_weight between 0 and 10),
     constraint ppm_section_known    check (display_section in ('readings','checks','progress')),
     constraint ppm_scoring_is_object check (jsonb_typeof(scoring_config) = 'object'),
+    -- which way a numeric measure goes wrong; the API requires it, this stops a typo
+    constraint ppm_direction_known check (
+        not (scoring_config ? 'direction')
+        or scoring_config ->> 'direction' in ('higher_is_worse', 'higher_is_better')
+    ),
     constraint ppm_score_window_ordered
         check (score_to_day >= score_from_day),
     -- you can never score something you do not collect

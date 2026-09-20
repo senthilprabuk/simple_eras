@@ -1,6 +1,6 @@
 /** Form state and checks for the admin screens, mirroring the API so mistakes show before saving. */
 
-import type { PrivacyLaw } from "@/lib/clinicalApi";
+import type { PrivacyLaw, RuleDirection } from "@/lib/clinicalApi";
 import type {
   AvailableParameter,
   BindingInput,
@@ -85,6 +85,8 @@ export interface BindingDraft {
   is_mandatory: boolean;
   question_text: string;
   nurse_script: string;
+  /** Empty when the measure is not numeric, where "higher" means nothing. */
+  direction: RuleDirection | "";
   scoring_config: string;
 }
 
@@ -92,7 +94,20 @@ export interface BindingDraft {
 export function starterRule(parameter: AvailableParameter): Record<string, unknown> {
   if (parameter.parameter_type === "boolean") return { binary_score: 1 };
   if (parameter.parameter_type === "ordinal") return { milestone: { "14": parameter.option_codes[0] ?? "" }, score: 1 };
-  return { bands: [[0, 10, 0], [10, 99, 1]] };
+  return { direction: "higher_is_worse", bands: [[0, 10, 0], [10, 99, 1]] };
+}
+
+/**
+ * The rule as the editor shows it: direction is picked from a list, the rest is
+ * typed as JSON. They are put back together on save, so the author never has to
+ * spell an enum correctly in a text box.
+ */
+function splitRule(config: Record<string, unknown>, parameterType: string): Pick<BindingDraft, "direction" | "scoring_config"> {
+  const { direction, ...rest } = config;
+  return {
+    direction: parameterType === "numeric" ? ((direction as RuleDirection) ?? "higher_is_worse") : "",
+    scoring_config: JSON.stringify(rest, null, 2),
+  };
 }
 
 export function bindingDraft(binding: RulesetBinding): BindingDraft {
@@ -107,7 +122,7 @@ export function bindingDraft(binding: RulesetBinding): BindingDraft {
     is_mandatory: binding.is_mandatory,
     question_text: binding.question_text ?? "",
     nurse_script: binding.nurse_script ?? "",
-    scoring_config: JSON.stringify(binding.scoring_config, null, 2),
+    ...splitRule(binding.scoring_config, binding.parameter_type),
   };
 }
 
@@ -123,7 +138,7 @@ export function newBindingDraft(parameter: AvailableParameter, observationDays: 
     is_mandatory: false,
     question_text: "",
     nurse_script: "",
-    scoring_config: JSON.stringify(starterRule(parameter), null, 2),
+    ...splitRule(starterRule(parameter), parameter.parameter_type),
   };
 }
 
@@ -161,6 +176,9 @@ export function parseBinding(
   if (!errors.scoring_config && (typeof config !== "object" || config === null || Array.isArray(config))) {
     errors.scoring_config = "The rule must be a JSON object, e.g. {\"binary_score\": 3}.";
   }
+  if (!errors.scoring_config && "direction" in (config as Record<string, unknown>)) {
+    errors.scoring_config = "Set which way is worse with the list above, not in the JSON.";
+  }
 
   if (Object.keys(errors).length > 0) return { binding: null, errors };
   return {
@@ -175,7 +193,9 @@ export function parseBinding(
       is_mandatory: draft.is_mandatory,
       question_text: draft.question_text.trim(),
       nurse_script: draft.nurse_script.trim() || null,
-      scoring_config: config as Record<string, unknown>,
+      scoring_config: draft.direction
+        ? { direction: draft.direction, ...(config as Record<string, unknown>) }
+        : (config as Record<string, unknown>),
     },
     errors: null,
   };

@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # Background jobs
     ESCALATION_SWEEP_INTERVAL_SECS: int = 60
     NOTIFICATION_DISPATCH_INTERVAL_SECS: int = 30
+    # Yesterday's silence does not change through the day, so this sweep is hourly
+    # rather than per minute; it only needs to beat the first ward round.
+    MISSED_CHECKIN_SWEEP_INTERVAL_SECS: int = 3600
     # "disabled" leaves escalation notifications queued and logs a warning;
     # "log" writes each one to the application log and marks it sent.
     NOTIFICATION_PROVIDER: Literal["disabled", "log"] = "disabled"

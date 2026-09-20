@@ -57,7 +57,9 @@ async def _procedure_with_approved_ruleset(db):
             (ruleset_id, parameter_id, display_order, display_section, collect_from_day, collect_to_day,
              score_from_day, score_to_day, parameter_weight, scoring_config, question_text)
         SELECT :r, p.parameter_id, v.ord, v.section, 0, 42, 0, 42, v.weight, CAST(v.cfg AS jsonb), v.question
-        FROM (VALUES ('temp_c', 1, 'readings', 3, '{"bands": [[0, 37.5, 0], [37.5, 38.5, 1], [38.5, 99, 3]]}', 'Temperature?'),
+        FROM (VALUES ('temp_c', 1, 'readings', 3,
+                      '{"direction": "higher_is_worse", "bands": [[0, 37.5, 0], [37.5, 38.5, 1], [38.5, 99, 3]]}',
+                      'Temperature?'),
                      ('breathless', 2, 'checks', 3, '{"binary_score": 3, "emergency": true}', 'Breathless?'))
              AS v(code, ord, section, weight, cfg, question)
         JOIN meta.parameter p ON p.parameter_code = v.code
@@ -69,7 +71,7 @@ async def _procedure_with_approved_ruleset(db):
 PAIN = {
     "display_section": "readings", "display_order": 3, "collect_from_day": 0, "collect_to_day": 42,
     "score_from_day": 0, "score_to_day": 42, "weight": 2, "question_text": "How bad is your pain?",
-    "scoring_config": {"bands": [[0, 5, 0], [5, 8, 1], [8, 99, 3]]},
+    "scoring_config": {"direction": "higher_is_worse", "bands": [[0, 5, 0], [5, 8, 1], [8, 99, 3]]},
 }
 
 
@@ -212,6 +214,7 @@ async def test_a_draft_from_start_to_approval(client, db, admin_headers):
     assert added.status_code == 200, added.text
     pain = next(b for b in added.json()["bindings"] if b["parameter_code"] == "pain")
     assert pain["scoring_summary"] == "5–8 → 1, ≥8 → 3"
+    assert pain["direction"] == "higher_is_worse"
 
     removed = await client.delete(f"{base}/{draft_id}/parameters/breathless", headers=admin_headers)
     assert [b["parameter_code"] for b in removed.json()["bindings"]] == ["temp_c", "pain"]
@@ -242,14 +245,20 @@ async def test_new_enrollments_use_the_newly_approved_version(client, db, admin_
     assert [(p["procedure_code"], p["ruleset_version"]) for p in options["procedures"]] == [(code, "2.0.0")]
 
 
+WORSE_HIGH = {"direction": "higher_is_worse"}
+
+
 @pytest.mark.parametrize("config, message", [
-    ({"bands": [[38, 37, 1]]}, "'from' must be below 'to'"),
-    ({"bands": [[0, 38, 0], [37, 99, 3]]}, "overlaps"),
-    ({"bands": [[0, 38, 0], [38, 99, 5]]}, "from 0 to 3"),
-    ({"band": [[0, 38, 0]]}, "unknown setting band"),
-    ({"bands_by_day": {"0-10": [[0, 5, 0]], "8-20": [[0, 4, 0]]}}, "overlap"),
-    ({"bands_by_day": {"0-60": [[0, 5, 0]]}}, "from 0 to 42"),
+    ({**WORSE_HIGH, "bands": [[38, 37, 1]]}, "'from' must be below 'to'"),
+    ({**WORSE_HIGH, "bands": [[0, 38, 0], [37, 99, 3]]}, "overlaps"),
+    ({**WORSE_HIGH, "bands": [[0, 38, 0], [38, 99, 5]]}, "from 0 to 3"),
+    ({**WORSE_HIGH, "band": [[0, 38, 0]]}, "unknown setting band"),
+    ({**WORSE_HIGH, "bands_by_day": {"0-10": [[0, 5, 0]], "8-20": [[0, 4, 0]]}}, "overlap"),
+    ({**WORSE_HIGH, "bands_by_day": {"0-60": [[0, 5, 0]]}}, "from 0 to 42"),
     ({"binary_score": 3}, "unknown setting binary_score"),
+    ({"bands": [[0, 38, 0], [38, 99, 3]]}, "needs direction"),
+    ({"direction": "up", "bands": [[0, 38, 0], [38, 99, 3]]}, "direction must be"),
+    ({"direction": "higher_is_better", "bands": [[0, 38, 0], [38, 99, 3]]}, "direction is higher_is_worse"),
 ])
 async def test_rules_the_engine_cannot_read_are_refused(client, db, admin_headers, config, message):
     _, approved_id = await _procedure_with_approved_ruleset(db)

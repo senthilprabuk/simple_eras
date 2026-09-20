@@ -243,6 +243,14 @@ export function enrollPatient(body: EnrollmentRequest): Promise<EnrollmentRespon
 
 /* ------------------------------------------------------------ rulesets */
 
+/** Which way a numeric measure goes wrong: a fever rises, oxygen falls. */
+export type RuleDirection = "higher_is_worse" | "higher_is_better";
+
+export const DIRECTION_LABELS: Record<RuleDirection, string> = {
+  higher_is_worse: "Higher is worse",
+  higher_is_better: "Higher is better",
+};
+
 export interface RulesetSummary {
   ruleset_id: number;
   procedure_code: string;
@@ -275,10 +283,13 @@ export interface RulesetParameter {
   is_emergency: boolean;
   question_text: string | null;
   scoring_summary: string;
+  direction: RuleDirection | null;
 }
 
 export interface RulesetDetail extends RulesetSummary {
   observation_days: number;
+  /** Signals that read every measure at once rather than belonging to one. */
+  composite_summary: string[];
   parameters: RulesetParameter[];
 }
 

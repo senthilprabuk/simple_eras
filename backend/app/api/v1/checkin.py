@@ -401,4 +401,6 @@ async def submit_checkin(payload: CheckInSubmit, db: AsyncSession = Depends(get_
         duplicate=False,
         tier=evaluation.tier,
         alert_id=alert_id,
+        coverage=evaluation.coverage,
+        low_confidence=evaluation.is_low_confidence,
     )

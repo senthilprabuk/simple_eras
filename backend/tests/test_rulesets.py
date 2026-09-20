@@ -22,7 +22,10 @@ async def test_detail_explains_every_parameter_and_its_windows(client, nurse_hea
     assert (params["drainage"]["collect_from_day"], params["drainage"]["score_from_day"]) == (0, 5)
     assert (params["spo2"]["collect_to_day"], params["spo2"]["score_to_day"]) == (42, 14)
     assert params["breathless"]["is_emergency"] is True
-    assert params["temp_c"]["scoring_summary"] == "37.5–38 → 1, 38–38.5 → 2, ≥38.5 → 3"
+    assert params["temp_c"]["scoring_summary"].startswith("37.5–38 → 1, 38–38.5 → 2, ≥38.5 → 3")
+    # A measure's derived signals are named in the same line, since they raise alerts of their own.
+    assert "fever_returned" in params["temp_c"]["scoring_summary"]
+    assert params["temp_c"]["direction"] == "higher_is_worse"
     assert params["knee_bend"]["section"] == "progress"
     assert detail["observation_days"] == 84
 

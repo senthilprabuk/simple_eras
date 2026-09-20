@@ -36,6 +36,7 @@ import {
   type RulesetDetail,
   type RulesetVersion,
 } from "@/lib/appAdminApi";
+import { DIRECTION_LABELS, type RuleDirection } from "@/lib/clinicalApi";
 import { formatDate } from "@/lib/format";
 import { useApiData } from "@/lib/useApiData";
 
@@ -47,7 +48,7 @@ const RULE_HELP: Record<string, { example: string; explain: string }> = {
   numeric: {
     example: '{"bands": [[0, 37.5, 0], [37.5, 38.5, 1], [38.5, 99, 3]]}',
     explain:
-      'Each band is [from, to, points]: "to" is exclusive and points run 0–3. Add "relative_to_baseline": true to score the rise from the discharge reading, use "bands_by_day": {"0-3": [...], "4-84": [...]} when the bands change with recovery, or {"detector": "drop_from_personal_best", "drop_fraction": 0.5, "score": 2}.',
+      'Each band is [from, to, points]: "to" is exclusive and points run 0–3. The bands must agree with the direction above — the band worth 0 points sits at the safe end. Add "relative_to_baseline": true to score the rise from the discharge reading, or use "bands_by_day": {"0-3": [...], "4-84": [...]} when the bands change with recovery. Add "trends": [{"name": "pain_rising", "detector": "delta_vs_rolling_mean", "weight": 2, "window_days": 3, "min_observations": 3, "bands": [...]}] to watch how the reading moves as well as where it sits; the other detectors are reemergence, monotonic_rise and drop_from_personal_best.',
   },
   boolean: {
     example: '{"binary_score": 3, "emergency": true}',
@@ -154,6 +155,19 @@ function BindingEditor({
       <Field label="What the nurse asks when this fires (optional)">
         <input className={inputClass} value={draft.nurse_script} onChange={(e) => set("nurse_script", e.target.value)} />
       </Field>
+      {parameter.parameter_type === "numeric" && (
+        <Field label="Which way it goes wrong" hint="A fever rises, oxygen falls. The engine watches the worrying side.">
+          <select
+            className={`${inputClass} max-w-sm`}
+            value={draft.direction}
+            onChange={(e) => set("direction", e.target.value as RuleDirection)}
+          >
+            {(Object.keys(DIRECTION_LABELS) as RuleDirection[]).map((value) => (
+              <option key={value} value={value}>{DIRECTION_LABELS[value]}</option>
+            ))}
+          </select>
+        </Field>
+      )}
       <Field label="Scoring rule (JSON)" error={errors.scoring_config}>
         <textarea
           className={`${inputClass} font-mono text-[13px] leading-snug`}
@@ -236,6 +250,9 @@ function Measures({ detail, onChanged }: { detail: RulesetDetail; onChanged: (d:
                       <span className="material-symbols-outlined text-[15px] text-error align-middle mr-1" aria-hidden="true">e911_emergency</span>
                     )}
                     {b.scoring_summary}
+                    {b.direction && (
+                      <span className="block font-body-sm text-on-surface-variant">{DIRECTION_LABELS[b.direction]}</span>
+                    )}
                   </td>
                   {isDraft && (
                     <td className="px-space-md py-2.5 whitespace-nowrap text-right">
@@ -506,6 +523,12 @@ function RulesetPanel({
           <dd className="text-on-surface">
             {detail.active_episodes} monitored under this version now{detail.total_episodes > detail.active_episodes ? `, ${detail.total_episodes} in all` : ""}
           </dd>
+          {detail.composite_summary.length > 0 && (
+            <>
+              <dt className="text-on-surface-variant">Across measures</dt>
+              <dd className="text-on-surface">{detail.composite_summary.join("; ")}</dd>
+            </>
+          )}
           {detail.approved_by && (
             <>
               <dt className="text-on-surface-variant">Approved</dt>

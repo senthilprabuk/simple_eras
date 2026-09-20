@@ -181,7 +181,12 @@ insert into fx_curve (fixture, parameter_code, day_from, day_to, start_val, end_
  ('f07_combination','pain',  10,21, 7,    7,    0.4),
  ('f07_combination','steps',  0, 7, 90,   500,  40),   ('f07_combination','steps',  8,21, 500,  150,  40),
 
- ('f08_early_fever','temp_c', 0, 3, 37.9, 37.8, 0.10), ('f08_early_fever','temp_c', 4,21, 37.0, 36.8, 0.10),
+ -- Tighter noise than the others on purpose. This patient's headline reading is
+ -- 37.9, a tenth below the 38.0 band edge, so noise of 0.10 rounds some days up
+ -- into the next band and scores 2 x weight 3 = 6, which is the review cut-off.
+ -- The fixture is testing that a low fever is absorbed, not that a reading
+ -- sitting on a band edge falls the right side of it.
+ ('f08_early_fever','temp_c', 0, 3, 37.9, 37.8, 0.04), ('f08_early_fever','temp_c', 4,21, 37.0, 36.8, 0.10),
  ('f08_early_fever','hr',     0, 3, 96,   88,   3.0),  ('f08_early_fever','hr',     4,21, 84,   72,   3.0),
  ('f08_early_fever','spo2',   0,21, 95,   97,   0.8),
  ('f08_early_fever','pain',   0, 3, 7,    7,    0.4),  ('f08_early_fever','pain',   4,21, 5,    2,    0.5),
@@ -254,13 +259,13 @@ insert into fx_expect
   'Bypasses scoring. Patient guidance shown client-side.'),
  ('f05_erratic',       null,null,'normal',    true,  null,
   'Gaps must not be read as deterioration.'),
- ('f06_dropout',          6,   7,'missed',    false, array['no_submission'],
+ ('f06_dropout',          6,   7,'missed',    false, array['missed_check_in'],
   'Raised by the absence sweep, never by ingest.'),
- ('f07_combination',      9,  12,'critical',  false, array['pain','temperature'],
+ ('f07_combination',      9,  12,'critical',  false, array['pain','temp_c'],
   'Weighted total only. No signal reaches band 3.'),
  ('f08_early_fever',   null,null,'normal',    true,  null,
   'Day-banded corridor must absorb 37.9 and pain 7 on days 0-3.'),
- ('f09_collect_score',    5,   6,'review',    false, array['wound_drainage'],
+ ('f09_collect_score',    5,   6,'review',    false, array['drainage'],
   'Drainage rows exist from day 2. No drainage signal before day 5.'),
  ('f11_one_day_spike', null,null,'review',    true,  array['pain_rising'],
   'Hysteresis holds a one-day blip below critical.'),
@@ -382,6 +387,24 @@ cross join lateral generate_series(c.day_from, c.day_to) g(day)
 join meta.parameter p on p.parameter_code = c.parameter_code
 join txn.patient_check_in ci on ci.check_in_id = md5(c.fixture || ':ci:' || g.day)::uuid
 on conflict (check_in_id, parameter_id) do nothing;
+
+
+-- The discharge baseline is the reading taken on the day of discharge, so it is
+-- day 0's own value, not the resting figure the patient settles back to weeks
+-- later. hr is the one measure scored as a distance from it (relative_to_baseline),
+-- and leaving the two out of step made every fixture patient look tachycardic
+-- through their first week: the curves start around 88 and settle to base_hr.
+-- That put both false-positive controls into the review queue for no reason.
+update txn.episode_baseline b
+   set value_num = v.value_num
+  from txn.patient_check_in c
+  join txn.patient_check_in_value v on v.check_in_id = c.check_in_id
+  join meta.parameter p on p.parameter_id = v.parameter_id
+ where c.episode_id = b.episode_id
+   and b.parameter_id = p.parameter_id
+   and p.parameter_code = 'hr'
+   and c.day_after_discharge = 0
+   and b.episode_id in (select md5(f.fixture || ':ep')::uuid from fx_patient f);
 
 
 -- ---------------------------------------------------------------------

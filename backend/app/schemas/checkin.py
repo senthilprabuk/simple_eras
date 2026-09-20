@@ -93,3 +93,7 @@ class CheckInReceipt(BaseModel):
     duplicate: bool = Field(False, description="True when the idempotency key replayed an earlier submission")
     tier: Optional[str] = Field(None, description="The rules engine's verdict; null on a replay")
     alert_id: Optional[UUID] = Field(None, description="Alert raised by this submission, if any")
+    coverage: Optional[float] = Field(None, description="Fraction of the day's questions that were answered")
+    low_confidence: bool = Field(
+        False, description="Too little of the day was answered to read much into the verdict"
+    )

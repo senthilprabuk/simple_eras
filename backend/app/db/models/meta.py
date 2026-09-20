@@ -124,6 +124,8 @@ class Ruleset(Base):
     review_at: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     critical_at: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     max_points_per_parameter: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=6)
+    # Signals that read every measure at once rather than belonging to one.
+    composite_config: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     status: Mapped[str] = mapped_column(Text, nullable=False, default="draft")
     approved_by: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

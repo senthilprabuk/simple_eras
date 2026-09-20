@@ -40,8 +40,12 @@ from app.schemas.app_admin import (
     RulesetUpdate,
 )
 from app.schemas.clinician import ClinicianCreate
-from app.services.scoring import describe_scoring
-from app.services.scoring_config import ScoringConfigError, validate_scoring_config
+from app.services.scoring import describe_scoring, describe_trends
+from app.services.scoring_config import (
+    ScoringConfigError,
+    validate_composite_config,
+    validate_scoring_config,
+)
 
 router = APIRouter(prefix="/app-admin", tags=["App admin"])
 
@@ -252,7 +256,7 @@ VERSION_SQL = """
     )
     SELECT sp.procedure_code, sp.procedure_name, sp.observation_days,
            r.ruleset_id, r.version, r.status, r.review_at, r.critical_at, r.max_points_per_parameter,
-           r.approved_by, r.approved_at, r.notes, r.created_at,
+           r.composite_config, r.approved_by, r.approved_at, r.notes, r.created_at,
            (SELECT count(*) FROM meta.procedure_parameter pp WHERE pp.ruleset_id = r.ruleset_id) AS parameter_count,
            coalesce(u.active_episodes, 0) AS active_episodes,
            coalesce(u.total_episodes, 0) AS total_episodes
@@ -293,7 +297,12 @@ async def _ruleset(db: AsyncSession, ruleset_id: int) -> PlatformRulesetDetail:
 
     return PlatformRulesetDetail(
         **row,
-        bindings=[RulesetBinding(**b, scoring_summary=describe_scoring(b["scoring_config"])) for b in bindings],
+        composite_summary=describe_trends(row["composite_config"] or {}),
+        bindings=[
+            RulesetBinding(**b, scoring_summary=describe_scoring(b["scoring_config"]),
+                           direction=b["scoring_config"].get("direction"))
+            for b in bindings
+        ],
         available_parameters=[AvailableParameter(**a) for a in available],
     )
 
@@ -301,7 +310,7 @@ async def _ruleset(db: AsyncSession, ruleset_id: int) -> PlatformRulesetDetail:
 async def _draft(db: AsyncSession, ruleset_id: int):
     """The ruleset, if it is still a draft; published versions never change."""
     row = (await db.execute(text("""
-        SELECT r.ruleset_id, r.procedure_id, r.status, r.version, sp.observation_days
+        SELECT r.ruleset_id, r.procedure_id, r.status, r.version, r.composite_config, sp.observation_days
         FROM meta.ruleset r
         JOIN meta.surgical_procedure sp ON sp.procedure_id = r.procedure_id
         WHERE r.ruleset_id = :id
@@ -384,8 +393,10 @@ async def start_draft(
     """A new draft version, copied from this one: its cut-offs and every measure's rule."""
     try:
         draft_id = (await db.execute(text("""
-            INSERT INTO meta.ruleset (procedure_id, version, review_at, critical_at, max_points_per_parameter, status, notes)
-            SELECT procedure_id, :version, review_at, critical_at, max_points_per_parameter, 'draft', :notes
+            INSERT INTO meta.ruleset (procedure_id, version, review_at, critical_at,
+                                      max_points_per_parameter, composite_config, status, notes)
+            SELECT procedure_id, :version, review_at, critical_at,
+                   max_points_per_parameter, composite_config, 'draft', :notes
             FROM meta.ruleset
             WHERE ruleset_id = :id
             RETURNING ruleset_id
@@ -418,19 +429,26 @@ async def update_draft(
     _: AuthenticatedAppAdmin = Depends(get_app_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    await _draft(db, ruleset_id)
+    draft = await _draft(db, ruleset_id)
     notes_given = "notes" in changes.model_fields_set
+    if changes.composite_config is not None:
+        try:
+            validate_composite_config(changes.composite_config, draft["observation_days"])
+        except ScoringConfigError as err:
+            raise HTTPException(422, detail=f"Cross-measure signals: {err}")
     try:
         await db.execute(text("""
             UPDATE meta.ruleset
                SET review_at = coalesce(:review_at, review_at),
                    critical_at = coalesce(:critical_at, critical_at),
                    max_points_per_parameter = coalesce(:max_points, max_points_per_parameter),
+                   composite_config = coalesce(CAST(:composite AS jsonb), composite_config),
                    notes = CASE WHEN :notes_given THEN :notes ELSE notes END
              WHERE ruleset_id = :id
         """), {
             "id": ruleset_id, "review_at": changes.review_at, "critical_at": changes.critical_at,
             "max_points": changes.max_points_per_parameter, "notes_given": notes_given,
+            "composite": None if changes.composite_config is None else json.dumps(changes.composite_config),
             "notes": (changes.notes or "").strip() or None,
         })
     except IntegrityError:
@@ -533,6 +551,10 @@ async def approve_draft(
     for b in bindings:
         _check_rule(b["parameter_code"], b["scoring_config"], b["parameter_type"], b["option_codes"],
                     draft["observation_days"], b["collect_to_day"])
+    try:
+        validate_composite_config(draft["composite_config"] or {}, draft["observation_days"])
+    except ScoringConfigError as err:
+        raise HTTPException(422, detail=f"Cross-measure signals: {err}")
 
     try:
         await db.execute(text("""

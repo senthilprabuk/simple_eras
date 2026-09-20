@@ -79,6 +79,17 @@ on conflict (parameter_id, option_code) do nothing;
 -- ---------------------------------------------------------------------
 -- Approved TKR ruleset
 -- ---------------------------------------------------------------------
+--   composite_config would hold the signals that read every measure at once,
+--   such as {"trends":[{"name":"persistent_abnormal","detector":"streak",
+--   "weight":1,"score":1,"min_days":3}]}. It is deliberately empty here.
+--
+--   The engine supports the streak detector and it is covered by tests, but
+--   adding it to this ruleset at weight 1 takes both false-positive control
+--   patients (f01_smooth, f13_out_of_window) from 4 points to 5 and so into
+--   the review queue: three days of mild pain is enough to arm it, which
+--   describes most of a normal recovery. Turning it on is a calibration
+--   decision for a surgeon, recorded as a new approved version — not a
+--   default. tests/test_fixture_expectations.py is what caught that.
 insert into meta.ruleset
     (procedure_id, version, review_at, critical_at, status, approved_by, approved_at)
 select procedure_id, '1.0.0', 5, 12, 'approved', 'Dr Example', now()
@@ -109,21 +120,37 @@ join meta.surgical_procedure sp
 join (values
     --  code          ord section     c_from c_to s_from s_to  wt
     ('temp_c',        1,'readings',  0, 42,  0, 42, 3,
-     '{"bands":[[0,37.5,0],[37.5,38.0,1],[38.0,38.5,2],[38.5,99,3]]}',
+     '{"direction":"higher_is_worse","bands":[[0,37.5,0],[37.5,38.0,1],[38.0,38.5,2],[38.5,99,3]],'
+     -- A temperature that settles for two days and climbs again on day six is a
+     -- far stronger infection signal than the same reading on day one, and no
+     -- absolute threshold separates them. slow_burn catches the creep that
+     -- never reaches 37.5 on any single day.
+     || '"trends":[{"name":"fever_returned","detector":"reemergence",'
+     || '"weight":3,"score":3,"normal_days_required":2},'
+     || '{"name":"slow_burn","detector":"monotonic_rise","weight":2,"score":2,'
+     || '"window_days":5,"min_observations":3,"min_total_rise":0.8}]}',
      'What is your temperature?'),
     ('pain',          2,'readings',  0, 84,  0, 84, 2,
-     '{"bands_by_day":{"0-3":[[0,8,0],[8,10,1],[10,99,3]],'
+     '{"direction":"higher_is_worse","bands_by_day":{"0-3":[[0,8,0],[8,10,1],[10,99,3]],'
      || '"4-10":[[0,4,0],[4,6,1],[6,8,2],[8,99,3]],'
-     || '"11-84":[[0,3,0],[3,5,1],[5,7,2],[7,99,3]]}}',
+     || '"11-84":[[0,3,0],[3,5,1],[5,7,2],[7,99,3]]},'
+     -- Scored on the gap from this patient's own recent average, so someone
+     -- sitting at 6 every day raises nothing while a jump from 3 to 6 does.
+     || '"trends":[{"name":"pain_rising","detector":"delta_vs_rolling_mean",'
+     || '"weight":2,"window_days":3,"min_observations":3,'
+     || '"bands":[[0,2,0],[2,3,1],[3,4,2],[4,99,3]]}]}',
      'How bad is your pain right now?'),
     ('hr',            3,'readings',  0, 42,  0, 42, 2,
-     '{"relative_to_baseline":true,"bands":[[0,10,0],[10,20,1],[20,30,2],[30,999,3]]}',
+     '{"direction":"higher_is_worse","relative_to_baseline":true,"bands":[[0,10,0],[10,20,1],[20,30,2],[30,999,3]]}',
      'What is your pulse?'),
     ('spo2',          4,'readings',  0, 42,  0, 14, 2,
-     '{"bands":[[0,90,3],[90,93,2],[93,95,1],[95,101,0]]}',
+     '{"direction":"higher_is_better","bands":[[0,90,3],[90,93,2],[93,95,1],[95,101,0]]}',
      'What is your oxygen reading?'),
     ('steps',         5,'readings',  0, 84,  0, 84, 1,
-     '{"detector":"drop_from_personal_best","drop_fraction":0.5,"score":2}',
+     -- Measured against this patient's own best rather than a population figure,
+     -- so it reads the same at 300 steps a day and at 3000.
+     '{"direction":"higher_is_better","trends":[{"name":"mobility_regression",'
+     || '"detector":"drop_from_personal_best","weight":1,"score":2,"drop_fraction":0.5}]}',
      'How many steps today?'),
     ('breathless',    6,'checks',    0, 42,  0, 42, 3,
      '{"binary_score":3,"emergency":true}',

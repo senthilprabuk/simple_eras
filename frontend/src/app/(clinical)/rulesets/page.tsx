@@ -2,7 +2,7 @@
 
 import React, { useCallback, useState } from "react";
 import { Card, ErrorBanner, Loading, Notice, PageBody, PageHeader, StatusPill } from "@/components/ui";
-import { fetchRuleset, fetchRulesets, type RulesetDetail, type RulesetParameter } from "@/lib/clinicalApi";
+import { DIRECTION_LABELS, fetchRuleset, fetchRulesets, type RulesetDetail, type RulesetParameter } from "@/lib/clinicalApi";
 import { formatDate } from "@/lib/format";
 import { useApiData } from "@/lib/useApiData";
 
@@ -77,6 +77,12 @@ function RulesetView({ ruleset }: { ruleset: RulesetDetail }) {
         <span>Across days 0–{ruleset.observation_days} after discharge</span>
       </div>
 
+      {ruleset.composite_summary.length > 0 && (
+        <p className="font-body-sm text-on-surface-variant">
+          Watched across every measure: {ruleset.composite_summary.join("; ")}.
+        </p>
+      )}
+
       {SECTIONS.map((section) => {
         const params = ruleset.parameters.filter((p) => p.section === section.key);
         if (params.length === 0) return null;
@@ -117,7 +123,10 @@ function RulesetView({ ruleset }: { ruleset: RulesetDetail }) {
                         <WindowBar p={p} span={ruleset.observation_days} />
                       </td>
                       <td className="py-3 px-space-md font-body-md text-on-surface tabular-nums">{p.weight}</td>
-                      <td className="py-3 px-space-md font-body-sm text-on-surface">{p.scoring_summary}</td>
+                      <td className="py-3 px-space-md font-body-sm text-on-surface">
+                        {p.scoring_summary}
+                        {p.direction && <span className="block text-on-surface-variant">{DIRECTION_LABELS[p.direction]}</span>}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

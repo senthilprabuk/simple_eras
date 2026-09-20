@@ -5,6 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.schemas.enrollment import PrivacyLaw
+from app.services.scoring_config import Direction
 
 RulesetStatus = Literal["draft", "approved", "retired"]
 
@@ -127,6 +128,7 @@ class RulesetBinding(BaseModel):
     nurse_script: Optional[str] = None
     scoring_config: Dict[str, Any]
     scoring_summary: str
+    direction: Optional[Direction] = Field(None, description="Which way a numeric measure goes wrong; null for the other kinds")
 
 class AvailableParameter(BaseModel):
     parameter_code: str
@@ -139,6 +141,10 @@ class PlatformRulesetDetail(PlatformRulesetVersion):
     procedure_code: str
     procedure_name: str
     observation_days: int
+    composite_config: Dict[str, Any] = Field(
+        default_factory=dict, description="Signals that read every measure at once rather than belonging to one"
+    )
+    composite_summary: List[str] = Field(default_factory=list)
     bindings: List[RulesetBinding]
     available_parameters: List[AvailableParameter] = Field(..., description="Measures not yet in this version")
 
@@ -159,6 +165,9 @@ class RulesetUpdate(BaseModel):
     critical_at: Optional[int] = Field(None, ge=2, le=100)
     max_points_per_parameter: Optional[int] = Field(None, ge=1, le=30)
     notes: Optional[str] = Field(None, max_length=500)
+    composite_config: Optional[Dict[str, Any]] = Field(
+        None, description="Cross-measure signals; {} clears them"
+    )
 
 class BindingInput(BaseModel):
     display_section: Literal["readings", "checks", "progress"]

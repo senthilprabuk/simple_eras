@@ -47,7 +47,8 @@ const PAIN: RulesetBinding = {
   parameter_code: "pain", parameter_name: "Pain score", parameter_type: "numeric", unit: null,
   display_section: "readings", display_order: 2, collect_from_day: 0, collect_to_day: 84, score_from_day: 0, score_to_day: 84,
   weight: 2, is_mandatory: false, question_text: "How bad is your pain?", nurse_script: null,
-  scoring_config: { bands: [[0, 5, 0], [5, 99, 1]] }, scoring_summary: "≥5 → 1",
+  scoring_config: { direction: "higher_is_worse", bands: [[0, 5, 0], [5, 99, 1]] },
+  scoring_summary: "≥5 → 1", direction: "higher_is_worse",
 };
 
 describe("measure editor", () => {
@@ -75,6 +76,36 @@ describe("measure editor", () => {
     expect(starterRule(knee)).toEqual({ milestone: { "14": "chair" }, score: 1 });
     const draft = newBindingDraft(calf, 42, 13);
     expect([draft.display_section, draft.display_order, draft.collect_to_day]).toEqual(["checks", "13", "42"]);
+  });
+});
+
+describe("which way a measure goes wrong", () => {
+  const spo2: AvailableParameter = { parameter_code: "spo2", parameter_name: "Oxygen", parameter_type: "numeric", unit: "%", option_codes: [] };
+
+  it("is picked from a list, so it never appears in the JSON the author edits", () => {
+    const draft = bindingDraft(PAIN);
+    expect(draft.direction).toBe("higher_is_worse");
+    expect(draft.scoring_config).not.toContain("direction");
+    expect(JSON.parse(draft.scoring_config)).toEqual({ bands: [[0, 5, 0], [5, 99, 1]] });
+  });
+
+  it("goes back into the rule on save", () => {
+    const { binding } = parseBinding({ ...bindingDraft(PAIN), direction: "higher_is_better" }, 84);
+    expect(binding?.scoring_config).toEqual({ direction: "higher_is_better", bands: [[0, 5, 0], [5, 99, 1]] });
+  });
+
+  it("is left out for a measure where higher means nothing", () => {
+    const calf: AvailableParameter = { parameter_code: "calf_pain", parameter_name: "Calf pain", parameter_type: "boolean", unit: null, option_codes: [] };
+    const draft = newBindingDraft(calf, 42, 3);
+    expect(draft.direction).toBe("");
+    expect(parseBinding({ ...draft, question_text: "Calf sore?" }, 42).binding?.scoring_config).toEqual({ binary_score: 1 });
+  });
+
+  it("starts a new numeric measure at higher is worse, and refuses a second copy typed into the JSON", () => {
+    const draft = newBindingDraft(spo2, 42, 4);
+    expect(draft.direction).toBe("higher_is_worse");
+    const typed = { ...draft, question_text: "Oxygen?", scoring_config: '{"direction": "higher_is_better", "bands": [[0, 95, 1]]}' };
+    expect(parseBinding(typed, 42).errors?.scoring_config).toContain("list above");
   });
 });
 

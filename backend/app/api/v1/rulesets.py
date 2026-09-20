@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import AuthenticatedAdmin, get_current_admin
 from app.db.session import get_db
 from app.schemas.ruleset import RulesetDetail, RulesetParameter, RulesetSummary
-from app.services.scoring import describe_scoring
+from app.services.scoring import describe_scoring, describe_trends
 
 router = APIRouter(prefix="/rulesets", tags=["Rulesets"])
 
@@ -22,7 +22,7 @@ SUMMARY_SQL = """
     SELECT
         r.ruleset_id, sp.procedure_code, sp.procedure_name, sp.observation_days,
         r.version, r.status, r.review_at, r.critical_at, r.max_points_per_parameter,
-        r.approved_by, r.approved_at, r.notes,
+        r.composite_config, r.approved_by, r.approved_at, r.notes,
         (SELECT count(*) FROM meta.procedure_parameter pp WHERE pp.ruleset_id = r.ruleset_id) AS parameter_count,
         (SELECT count(*) FROM txn.patient_episode e
          WHERE e.ruleset_id = r.ruleset_id AND e.hospital_id = :h_id) AS episodes_using
@@ -68,6 +68,7 @@ async def get_ruleset(
 
     return RulesetDetail(
         **summary,
+        composite_summary=describe_trends(summary["composite_config"] or {}),
         parameters=[
             RulesetParameter(
                 code=r["parameter_code"],
@@ -85,6 +86,7 @@ async def get_ruleset(
                 is_emergency=bool(r["scoring_config"].get("emergency")),
                 question_text=r["question_text"],
                 scoring_summary=describe_scoring(r["scoring_config"]),
+                direction=r["scoring_config"].get("direction"),
                 scoring_config=r["scoring_config"],
             )
             for r in rows

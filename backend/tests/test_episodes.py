@@ -1,6 +1,16 @@
 from uuid import uuid4
 
+from sqlalchemy import text
+
 from tests.support import episode_for_mrn
+
+DAY_ZERO_SQL = """
+    SELECT v.value_num
+    FROM txn.patient_check_in c
+    JOIN txn.patient_check_in_value v ON v.check_in_id = c.check_in_id
+    JOIN meta.parameter p ON p.parameter_id = v.parameter_id
+    WHERE c.episode_id = :e AND c.day_after_discharge = 0 AND p.parameter_code = :code
+"""
 
 
 async def test_summary_pairs_discharge_baseline_with_latest_check_in(client, db, nurse_headers):
@@ -22,7 +32,10 @@ async def test_summary_pairs_discharge_baseline_with_latest_check_in(client, db,
     assert "redness" not in readings
     assert readings["temp_c"]["baseline"] == 36.8
     assert isinstance(readings["temp_c"]["current"], float)
-    assert readings["hr"]["baseline"] == 72.0
+    # The discharge baseline is the reading taken on the day of discharge. Pulse is
+    # scored as a distance from it, so the two have to be the same observation.
+    day_zero_hr = (await db.execute(text(DAY_ZERO_SQL), {"e": episode_id, "code": "hr"})).scalar_one()
+    assert readings["hr"]["baseline"] == float(day_zero_hr)
     assert readings["knee_bend"]["baseline"] == "Sit in a dining chair"
     assert readings["knee_bend"]["current"] == "Get into a car"
     assert readings["walk_aid"]["current"] == "Walking stick"

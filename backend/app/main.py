@@ -8,6 +8,7 @@ from app.core.config import settings
 from app.core.logging_config import configure_logging
 from app.api.v1 import api_v1_router
 from app.services.escalation import run_escalation_sweep
+from app.services.missed_checkins import run_missed_checkin_sweep
 from app.services.notifications import dispatch_queued_notifications
 
 configure_logging(settings.LOG_LEVEL)
@@ -29,11 +30,18 @@ async def lifespan(app: FastAPI):
         seconds=settings.NOTIFICATION_DISPATCH_INTERVAL_SECS,
         id="notification_dispatch", replace_existing=True, max_instances=1, coalesce=True,
     )
+    scheduler.add_job(
+        run_missed_checkin_sweep, "interval",
+        seconds=settings.MISSED_CHECKIN_SWEEP_INTERVAL_SECS,
+        id="missed_checkin_sweep", replace_existing=True, max_instances=1, coalesce=True,
+    )
     scheduler.start()
     logger.info(
-        "Started: escalation sweep every %ss, notification dispatch every %ss (provider: %s). CORS origins: %s",
+        "Started: escalation sweep every %ss, notification dispatch every %ss, "
+        "missed check-in sweep every %ss (provider: %s). CORS origins: %s",
         settings.ESCALATION_SWEEP_INTERVAL_SECS,
         settings.NOTIFICATION_DISPATCH_INTERVAL_SECS,
+        settings.MISSED_CHECKIN_SWEEP_INTERVAL_SECS,
         settings.NOTIFICATION_PROVIDER,
         settings.cors_origins_list,
     )
