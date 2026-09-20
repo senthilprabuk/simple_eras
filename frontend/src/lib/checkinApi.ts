@@ -93,11 +93,16 @@ export function fetchCheckInForm(episodeId: string, day?: number): Promise<Check
   return getJson<CheckInForm>(`/api/v1/checkin/form?episode_id=${episodeId}${query}`);
 }
 
+export function fetchCheckInFormByToken(token: string): Promise<CheckInForm> {
+  return getJson<CheckInForm>(`/api/v1/checkin/form?token=${encodeURIComponent(token)}`);
+}
+
 export async function submitCheckIn(input: {
   episodeId: string;
   day: number;
   simulated: boolean;
   idempotencyKey: string;
+  token?: string;
   parameters: FormParameter[];
   answers: Answers;
 }): Promise<CheckInReceipt> {
@@ -118,6 +123,7 @@ export async function submitCheckIn(input: {
       day_after_discharge: input.day,
       simulated: input.simulated,
       idempotency_key: input.idempotencyKey,
+      token: input.token,
       values,
     }),
   });

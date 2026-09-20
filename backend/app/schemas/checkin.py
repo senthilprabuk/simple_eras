@@ -80,6 +80,7 @@ class CheckInSubmit(BaseModel):
     day_after_discharge: int = Field(..., ge=0, le=365)
     idempotency_key: str = Field(..., min_length=8, max_length=200)
     simulated: bool = False
+    token: Optional[str] = None
     values: List[CheckInValueIn] = Field(default_factory=list)
 
 class CheckInReceipt(BaseModel):

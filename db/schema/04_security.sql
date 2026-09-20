@@ -87,6 +87,8 @@ grant update (phone_e164, language_code, date_of_birth, gender,
 -- hospital settings and WhatsApp templates
 grant update (hospital_name, city, timezone, ack_window_secs) on meta.hospital to eras_app;
 grant select, insert, update on meta.message_template to eras_app;
+grant select, insert, update on txn.patient_message to eras_app;
+grant select, insert, update, delete on meta.hospital_whatsapp to eras_app;
 
 
 -- ---------------------------------------------------------------------
@@ -102,11 +104,15 @@ alter table txn.patient_check_in_value enable row level security;
 alter table txn.check_in_evaluation    enable row level security;
 alter table txn.alert                  enable row level security;
 alter table txn.alert_notification     enable row level security;
+alter table txn.patient_message        enable row level security;
 
 create policy tenant_isolation on txn.patient to eras_app
     using (hospital_id = meta.current_hospital_id());
 
 create policy tenant_isolation on txn.patient_episode to eras_app
+    using (hospital_id = meta.current_hospital_id());
+
+create policy tenant_isolation on txn.patient_message to eras_app
     using (hospital_id = meta.current_hospital_id());
 
 create policy tenant_isolation on txn.patient_contact to eras_app
@@ -150,6 +156,7 @@ create policy tenant_isolation on txn.alert_notification to eras_app
 alter table meta.hospital           enable row level security;
 alter table meta.hospital_procedure enable row level security;
 alter table meta.message_template   enable row level security;
+alter table meta.hospital_whatsapp  enable row level security;
 
 create policy tenant_isolation on meta.hospital to eras_app
     using (hospital_id = meta.current_hospital_id());
@@ -158,6 +165,9 @@ create policy tenant_isolation on meta.hospital_procedure to eras_app
     using (hospital_id = meta.current_hospital_id());
 
 create policy tenant_isolation on meta.message_template to eras_app
+    using (hospital_id = meta.current_hospital_id());
+
+create policy tenant_isolation on meta.hospital_whatsapp to eras_app
     using (hospital_id = meta.current_hospital_id());
 
 

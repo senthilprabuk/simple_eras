@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { Suspense, useState, useEffect, useMemo } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   EpisodeOption,
   CheckInForm,
@@ -11,6 +12,7 @@ import {
   AnswerValue,
   fetchEpisodes,
   fetchCheckInForm,
+  fetchCheckInFormByToken,
   submitCheckIn,
   sectionTitle,
   SECTION_META,
@@ -55,7 +57,11 @@ function newIdempotencyKey(): string {
   return `checkin-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-export default function PatientCheckInPage() {
+function CheckInContent() {
+  const searchParams = useSearchParams();
+  const token = searchParams.get("token");
+  const isTokenMode = Boolean(token);
+
   const [episodes, setEpisodes] = useState<EpisodeOption[]>([]);
   const [episodesError, setEpisodesError] = useState<string | null>(null);
   const [chosenKey, setChosenKey] = useState<string>("");
@@ -81,8 +87,35 @@ export default function PatientCheckInPage() {
     [photoUrl]
   );
 
+  // When token is provided (patient clicked WhatsApp magic link), fetch directly by token
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    fetchCheckInFormByToken(token)
+      .then((next) => {
+        if (cancelled) return;
+        setForm(next);
+        setFormError(null);
+        setLoadedKey(token);
+        setAnswers({});
+        setPhoto(null);
+        setReceipt(null);
+        setSubmitError(null);
+        setIdempotencyKey(newIdempotencyKey());
+        setStepIndex(HOME);
+      })
+      .catch((err: Error) => {
+        if (cancelled) return;
+        setFormError(`Unable to load check-in link: ${err.message}. Please use the latest WhatsApp message sent to you.`);
+        setLoadedKey(token);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token, reloadNonce]);
+
   const simOptions: SimOption[] = useMemo(() => {
-    if (episodes.length === 0) return [];
+    if (isTokenMode || episodes.length === 0) return [];
     const base = episodes.find((e) => e.mrn === SIMULATED_PATIENT_MRN) ?? episodes[0];
     return [
       ...NEW_PATIENT_DAYS.map((d) => ({
@@ -99,9 +132,11 @@ export default function PatientCheckInPage() {
         episodeId: e.episode_id,
       })),
     ];
-  }, [episodes]);
+  }, [isTokenMode, episodes]);
 
+  // When in simulator mode (no token), load episodes
   useEffect(() => {
+    if (isTokenMode) return;
     let cancelled = false;
     fetchEpisodes()
       .then((list) => {
@@ -115,20 +150,20 @@ export default function PatientCheckInPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isTokenMode]);
 
-  // Selection is derived, defaulting to the first live patient so the app opens on real data.
+  // Selection is derived for simulator mode
   const selected = useMemo(() => {
-    if (simOptions.length === 0) return undefined;
+    if (isTokenMode || simOptions.length === 0) return undefined;
     return (
       simOptions.find((o) => o.key === chosenKey) ??
       simOptions.find((o) => o.day === undefined) ??
       simOptions[0]
     );
-  }, [simOptions, chosenKey]);
+  }, [isTokenMode, simOptions, chosenKey]);
 
   useEffect(() => {
-    if (!selected) return;
+    if (isTokenMode || !selected) return;
     let cancelled = false;
     const key = selected.key;
     fetchCheckInForm(selected.episodeId, selected.day)
@@ -152,11 +187,13 @@ export default function PatientCheckInPage() {
     return () => {
       cancelled = true;
     };
-  }, [selected, reloadNonce]);
+  }, [isTokenMode, selected, reloadNonce]);
 
-  const ready = selected !== undefined && loadedKey === selected.key;
+  const ready = isTokenMode
+    ? (token ? loadedKey === token : false)
+    : (selected !== undefined && loadedKey === selected.key);
   const activeForm = ready && !formError ? form : null;
-  const errorMessage = episodesError ?? (ready ? formError : null);
+  const errorMessage = isTokenMode ? formError : (episodesError ?? (ready ? formError : null));
   const loading = !errorMessage && !activeForm;
 
   const steps = useMemo(() => {
@@ -198,6 +235,7 @@ export default function PatientCheckInPage() {
         day: activeForm.effective_day,
         simulated: activeForm.simulated,
         idempotencyKey,
+        token: token || undefined,
         parameters: allParameters,
         answers,
       });
@@ -212,12 +250,14 @@ export default function PatientCheckInPage() {
 
   return (
     <div className="min-h-screen w-full bg-surface-container-high flex items-center justify-center sm:p-6">
-      <SimulatorControl
-        options={simOptions}
-        value={selected?.key ?? ""}
-        onChange={setChosenKey}
-        form={activeForm}
-      />
+      {!isTokenMode && (
+        <SimulatorControl
+          options={simOptions}
+          value={selected?.key ?? ""}
+          onChange={setChosenKey}
+          form={activeForm}
+        />
+      )}
 
       <div className="relative flex flex-col w-full h-screen bg-surface-bright overflow-hidden sm:h-[860px] sm:max-h-[calc(100vh-3rem)] sm:w-[400px] sm:rounded-[2.25rem] sm:border-[10px] sm:border-on-surface sm:shadow-2xl">
         <StatusBar />
@@ -293,6 +333,7 @@ export default function PatientCheckInPage() {
               <DoneScreen
                 receipt={receipt}
                 urgent={urgent.length > 0}
+                isTokenMode={isTokenMode}
                 onRestart={() => setReloadNonce((n) => n + 1)}
               />
             )}
@@ -759,10 +800,12 @@ function ReviewStep({
 function DoneScreen({
   receipt,
   urgent,
+  isTokenMode,
   onRestart,
 }: {
   receipt: CheckInReceipt;
   urgent: boolean;
+  isTokenMode?: boolean;
   onRestart: () => void;
 }) {
   return (
@@ -796,6 +839,20 @@ function DoneScreen({
         </div>
       )}
 
+      {isTokenMode && (
+        <div className="w-full bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-4 text-left flex items-start gap-3">
+          <span className="material-symbols-outlined text-emerald-600 text-2xl shrink-0 mt-0.5">
+            mark_chat_read
+          </span>
+          <div>
+            <p className="font-title-sm text-emerald-950 font-semibold">WhatsApp Confirmation Sent</p>
+            <p className="font-body-xs text-emerald-800 mt-0.5 leading-relaxed">
+              A summary confirmation has been sent to your WhatsApp number. Your clinical orthopedic team has received your answers.
+            </p>
+          </div>
+        </div>
+      )}
+
       <dl className="w-full bg-surface-container-lowest border border-outline-variant/40 rounded-xl divide-y divide-outline-variant/30 text-left">
         {[
           ["Reference", receipt.check_in_id.slice(0, 8)],
@@ -817,5 +874,26 @@ function DoneScreen({
         Start again
       </button>
     </main>
+  );
+}
+
+export default function PatientCheckInPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen w-full bg-surface-container-high flex items-center justify-center">
+          <div className="flex flex-col items-center gap-3">
+            <span className="material-symbols-outlined text-3xl text-primary animate-spin">
+              progress_activity
+            </span>
+            <span className="text-sm text-on-surface-variant font-medium">
+              Loading your recovery check-in…
+            </span>
+          </div>
+        </div>
+      }
+    >
+      <CheckInContent />
+    </Suspense>
   );
 }

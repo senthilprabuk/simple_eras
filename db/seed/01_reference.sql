@@ -208,4 +208,25 @@ cross join (values
 where h.hospital_code = 'CBE-01'
 on conflict do nothing;
 
+-- Default WhatsApp Business account for St. Mary's Orthopedic Center
+insert into meta.hospital_whatsapp (
+    hospital_id, display_name, display_phone_number,
+    phone_number_id, waba_id, access_token, verify_token,
+    health_status, is_default, is_active
+)
+select
+    h.hospital_id,
+    'St. Mary''s Orthopedic Helpline',
+    '+91 98765 43210',
+    '104239857123456',
+    '108374829103948',
+    'mock_meta_access_token_stmarys',
+    'eras_stmarys_verify_2026',
+    'healthy',
+    true,
+    true
+from meta.hospital h
+where h.hospital_code = 'CBE-01'
+on conflict (phone_number_id) do nothing;
+
 commit;

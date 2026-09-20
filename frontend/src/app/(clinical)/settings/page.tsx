@@ -15,7 +15,19 @@ import {
   secondaryButtonClass,
 } from "@/components/ui";
 import { ApiError } from "@/lib/api";
-import { changePassword, createClinician, fetchClinicians, updateClinician, type Clinician, type Role } from "@/lib/clinicalApi";
+import {
+  changePassword,
+  createClinician,
+  fetchClinicians,
+  updateClinician,
+  fetchWhatsAppAccount,
+  saveWhatsAppAccount,
+  disconnectWhatsAppAccount,
+  sendTestWhatsAppMessage,
+  type Clinician,
+  type Role,
+  type WhatsAppAccount,
+} from "@/lib/clinicalApi";
 import { formatDate } from "@/lib/format";
 import { useApiData } from "@/lib/useApiData";
 
@@ -253,7 +265,382 @@ export default function SettingsPage() {
             {canManage && <AddClinicianForm onAdded={reload} />}
           </Card>
         </div>
+
+        <WhatsAppAccountSection />
       </PageBody>
     </>
+  );
+}
+
+function WhatsAppAccountSection() {
+  const session = useSession();
+  const canManage = session.role === "superadmin" || session.role === "admin";
+  const { data: account, error, reload } = useApiData(fetchWhatsAppAccount);
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({
+    displayPhoneNumber: "",
+    displayName: "",
+    phoneNumberId: "",
+    wabaId: "",
+    accessToken: "",
+    verifyToken: "eras_stmarys_verify_2026",
+    metaAppId: "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  // Test send state
+  const [showTest, setShowTest] = useState(false);
+  const [testPhone, setTestPhone] = useState("");
+  const [testSending, setTestSending] = useState(false);
+  const [testStatus, setTestStatus] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const startEdit = () => {
+    if (account) {
+      setForm({
+        displayPhoneNumber: account.display_phone_number,
+        displayName: account.display_name,
+        phoneNumberId: account.phone_number_id,
+        wabaId: account.waba_id,
+        accessToken: "",
+        verifyToken: account.verify_token,
+        metaAppId: account.meta_app_id ?? "",
+      });
+    } else {
+      setForm({
+        displayPhoneNumber: "+91 98765 43210",
+        displayName: "St. Mary's Orthopedic Helpline",
+        phoneNumberId: "",
+        wabaId: "",
+        accessToken: "",
+        verifyToken: "eras_stmarys_verify_2026",
+        metaAppId: "",
+      });
+    }
+    setSaveError(null);
+    setEditing(true);
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!form.phoneNumberId.trim() || !form.wabaId.trim() || (!account && !form.accessToken.trim())) {
+      setSaveError("Phone Number ID, WABA ID, and Access Token are required.");
+      return;
+    }
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await saveWhatsAppAccount({
+        display_phone_number: form.displayPhoneNumber.trim() || undefined,
+        display_name: form.displayName.trim() || undefined,
+        phone_number_id: form.phoneNumberId.trim(),
+        waba_id: form.wabaId.trim(),
+        access_token: form.accessToken.trim() || undefined,
+        verify_token: form.verifyToken.trim(),
+        meta_app_id: form.metaAppId.trim() || undefined,
+      });
+      setEditing(false);
+      reload();
+    } catch (err) {
+      setSaveError(err instanceof ApiError ? err.message : "Failed to connect WhatsApp account");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (!confirm("Are you sure you want to disconnect this WhatsApp number? Automated reminders will be paused.")) return;
+    try {
+      await disconnectWhatsAppAccount();
+      reload();
+    } catch (err) {
+      alert(err instanceof ApiError ? err.message : "Failed to disconnect WhatsApp number");
+    }
+  };
+
+  const handleCopyWebhook = () => {
+    if (!account) return;
+    navigator.clipboard.writeText(account.webhook_url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleSendTest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!testPhone.trim()) return;
+    setTestSending(true);
+    setTestStatus(null);
+    try {
+      const res = await sendTestWhatsAppMessage(testPhone.trim());
+      setTestStatus({
+        ok: res.status === "sent",
+        message: res.status === "sent" ? "Test message dispatched successfully!" : (res.error || "Queued"),
+      });
+    } catch (err) {
+      setTestStatus({
+        ok: false,
+        message: err instanceof ApiError ? err.message : "Failed to send test message",
+      });
+    } finally {
+      setTestSending(false);
+    }
+  };
+
+  return (
+    <Card
+      title="WhatsApp Business Number & QR Code"
+      subtitle="Connect the official hospital WhatsApp number to send daily recovery check-ins and receive patient updates."
+    >
+      {error && <ErrorBanner message={error} onRetry={reload} />}
+
+      {!account && !editing && (
+        <div className="flex flex-col md:flex-row items-center justify-between gap-space-lg p-space-lg rounded-xl bg-surface-container-low border border-outline-variant/30">
+          <div className="flex flex-col gap-1">
+            <h3 className="font-title-md font-semibold text-on-surface">No WhatsApp Business Number Connected</h3>
+            <p className="font-body-md text-on-surface-variant">
+              Connect your hospital&apos;s Meta WhatsApp Business Account to start dispatching automated daily check-ins.
+            </p>
+          </div>
+          {canManage && (
+            <button type="button" onClick={startEdit} className={primaryButtonClass}>
+              Connect WhatsApp Number
+            </button>
+          )}
+        </div>
+      )}
+
+      {account && !editing && (
+        <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-space-xl p-space-lg rounded-xl bg-surface-container-low border border-outline-variant/40">
+          {/* Left Details */}
+          <div className="flex-1 flex flex-col gap-space-sm">
+            <div className="flex items-center gap-2">
+              <StatusPill
+                status={account.health_status === "healthy" ? "active" : "inactive"}
+                label={account.health_status === "healthy" ? "Active" : "Action Needed"}
+              />
+              <span className="font-label-lg font-bold text-on-surface">{account.display_name}</span>
+            </div>
+
+            <div className="my-1">
+              <span className="font-label-sm uppercase tracking-wider text-on-surface-variant block font-semibold">Active WhatsApp Business Number</span>
+              <span className="font-headline-sm text-primary font-mono font-bold tracking-tight">
+                {account.display_phone_number}
+              </span>
+            </div>
+
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-space-md gap-y-1 font-body-sm text-on-surface-variant">
+              <dt className="font-semibold">Phone Number ID:</dt>
+              <dd className="font-mono text-on-surface">{account.phone_number_id}</dd>
+              <dt className="font-semibold">WABA ID:</dt>
+              <dd className="font-mono text-on-surface">{account.waba_id}</dd>
+              <dt className="font-semibold">Access Token:</dt>
+              <dd className="font-mono text-on-surface">{account.access_token_masked}</dd>
+            </dl>
+
+            {/* Meta Webhook URL helper */}
+            <div className="mt-space-sm p-space-sm rounded-lg bg-surface-bright border border-outline-variant/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+              <div className="min-w-0">
+                <span className="font-label-sm text-on-surface-variant block uppercase tracking-wider">Meta Webhook URL</span>
+                <code className="font-mono text-xs text-primary truncate block">{account.webhook_url}</code>
+              </div>
+              <button
+                type="button"
+                onClick={handleCopyWebhook}
+                className="px-2.5 py-1 text-xs font-semibold rounded border border-outline-variant/50 bg-surface-container-lowest hover:border-primary text-primary transition-colors cursor-pointer shrink-0"
+              >
+                {copied ? "Copied!" : "Copy URL"}
+              </button>
+            </div>
+
+            {/* Action buttons */}
+            {canManage && (
+              <div className="flex items-center gap-space-sm mt-space-sm">
+                <button
+                  type="button"
+                  onClick={() => setShowTest(!showTest)}
+                  className={secondaryButtonClass}
+                >
+                  {showTest ? "Close Test Form" : "Send Test WhatsApp Message"}
+                </button>
+                <button
+                  type="button"
+                  onClick={startEdit}
+                  className="font-label-md text-primary hover:underline px-2 py-1"
+                >
+                  Edit Credentials
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDisconnect}
+                  className="font-label-md text-error hover:underline px-2 py-1 ml-auto"
+                >
+                  Disconnect Number
+                </button>
+              </div>
+            )}
+
+            {/* Test Send Form */}
+            {showTest && (
+              <form onSubmit={handleSendTest} className="mt-space-md p-space-md rounded-xl bg-surface-container-lowest border border-outline-variant/40 flex flex-col gap-space-sm">
+                <h4 className="font-title-sm font-semibold text-on-surface">Send Test WhatsApp Message</h4>
+                <p className="font-body-sm text-on-surface-variant">
+                  Verify message dispatch from this hospital number directly to any patient or doctor phone.
+                </p>
+                <div className="flex gap-space-sm">
+                  <input
+                    type="tel"
+                    placeholder="+91 98765 43210"
+                    value={testPhone}
+                    onChange={(e) => setTestPhone(e.target.value)}
+                    className={`${inputClass} max-w-xs font-mono`}
+                    required
+                  />
+                  <button type="submit" disabled={testSending || !testPhone.trim()} className={primaryButtonClass}>
+                    {testSending ? "Sending…" : "Send Test"}
+                  </button>
+                </div>
+                {testStatus && (
+                  <p role="status" className={`font-body-sm rounded-lg px-3 py-2 ${testStatus.ok ? "bg-primary/10 text-primary" : "bg-error-container text-on-error-container"}`}>
+                    {testStatus.message}
+                  </p>
+                )}
+              </form>
+            )}
+          </div>
+
+          {/* Right Scannable QR Code */}
+          <div className="flex flex-col items-center gap-2 p-4 rounded-xl bg-white shadow-xs border border-outline-variant/30 shrink-0 self-center lg:self-auto">
+            {account.qr_code_url ? (
+              <img
+                src={account.qr_code_url}
+                alt="Hospital WhatsApp Click-to-Chat QR Code"
+                className="w-40 h-40 object-contain rounded-md"
+              />
+            ) : (
+              <div className="w-40 h-40 bg-surface-container-high flex items-center justify-center text-xs text-on-surface-variant">
+                QR Unavailable
+              </div>
+            )}
+            <div className="text-center">
+              <span className="font-label-md font-bold text-slate-800 block">Scan to Chat</span>
+              <span className="font-body-xs text-slate-500 block max-w-[170px]">
+                Scan to open hospital chat on patient WhatsApp
+              </span>
+            </div>
+            <a
+              href={account.click_to_chat_url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs text-primary hover:underline font-semibold mt-1"
+            >
+              Open WhatsApp Link →
+            </a>
+          </div>
+        </div>
+      )}
+
+      {editing && (
+        <form onSubmit={handleSave} className="flex flex-col gap-space-md max-w-lg p-space-md rounded-xl bg-surface-container-low border border-outline-variant/40">
+          <h3 className="font-title-md font-bold text-on-surface">
+            {account ? "Update WhatsApp Business Credentials" : "Connect WhatsApp Business Account"}
+          </h3>
+          <p className="font-body-sm text-on-surface-variant">
+            Enter your credentials from the Meta WhatsApp Cloud API portal. These will be verified automatically.
+          </p>
+
+          <label className="flex flex-col gap-1">
+            <span className="font-label-md text-on-surface">WhatsApp Business Phone Number</span>
+            <input
+              type="tel"
+              placeholder="e.g. +91 98765 43210"
+              value={form.displayPhoneNumber}
+              onChange={(e) => setForm({ ...form, displayPhoneNumber: e.target.value })}
+              className={`${inputClass} font-mono font-bold`}
+              required
+            />
+            <span className="font-body-xs text-on-surface-variant">
+              The official phone number displayed to patients and embedded into the Click-to-Chat QR code.
+            </span>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="font-label-md text-on-surface">Hospital Helpline / Clinic Name</span>
+            <input
+              type="text"
+              placeholder="e.g. St. Mary's Orthopedic Helpline"
+              value={form.displayName}
+              onChange={(e) => setForm({ ...form, displayName: e.target.value })}
+              className={inputClass}
+              required
+            />
+            <span className="font-body-xs text-on-surface-variant">
+              Displayed in patient chat pre-fill greetings and header banners.
+            </span>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="font-label-md text-on-surface">Phone Number ID</span>
+            <input
+              type="text"
+              placeholder="e.g. 104239857123456"
+              value={form.phoneNumberId}
+              onChange={(e) => setForm({ ...form, phoneNumberId: e.target.value })}
+              className={`${inputClass} font-mono`}
+              required
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="font-label-md text-on-surface">WhatsApp Business Account ID (WABA ID)</span>
+            <input
+              type="text"
+              placeholder="e.g. 108374829103948"
+              value={form.wabaId}
+              onChange={(e) => setForm({ ...form, wabaId: e.target.value })}
+              className={`${inputClass} font-mono`}
+              required
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="font-label-md text-on-surface">
+              Permanent Access Token {account && <span className="font-normal text-on-surface-variant">(leave blank to keep stored token)</span>}
+            </span>
+            <input
+              type="password"
+              placeholder={account ? "••••••••" : "Meta System User Access Token"}
+              value={form.accessToken}
+              onChange={(e) => setForm({ ...form, accessToken: e.target.value })}
+              className={`${inputClass} font-mono`}
+              required={!account}
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="font-label-md text-on-surface">Webhook Verify Token</span>
+            <input
+              type="text"
+              placeholder="e.g. eras_stmarys_verify_2026"
+              value={form.verifyToken}
+              onChange={(e) => setForm({ ...form, verifyToken: e.target.value })}
+              className={inputClass}
+              required
+            />
+          </label>
+
+          {saveError && <p role="alert" className="font-body-sm text-error">{saveError}</p>}
+
+          <div className="flex items-center gap-space-sm mt-space-sm">
+            <button type="submit" disabled={saving} className={primaryButtonClass}>
+              {saving ? "Verifying with Meta…" : "Save & Verify"}
+            </button>
+            <button type="button" onClick={() => setEditing(false)} className={secondaryButtonClass}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+    </Card>
   );
 }

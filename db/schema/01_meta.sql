@@ -330,7 +330,7 @@ create table meta.message_template (
 
     primary key (hospital_id, template_key, language_code),
     constraint template_key_known
-        check (template_key in ('enrollment_welcome', 'checkin_reminder', 'missed_checkin', 'urgent_guidance')),
+        check (template_key in ('enrollment_welcome', 'checkin_reminder', 'missed_checkin', 'urgent_guidance', 'checkin_confirmation')),
     constraint template_language_known
         check (language_code in ('en', 'ta', 'hi')),
     -- WhatsApp's limit for a template body
@@ -339,6 +339,37 @@ create table meta.message_template (
 );
 
 create trigger message_template_touch before update on meta.message_template
+    for each row execute function meta.set_updated_at();
+
+
+-- ---------------------------------------------------------------------
+-- hospital_whatsapp (Official clinic WhatsApp Business accounts & credentials)
+-- ---------------------------------------------------------------------
+create table meta.hospital_whatsapp (
+    account_id           uuid        primary key default gen_random_uuid(),
+    hospital_id          integer     not null references meta.hospital(hospital_id) on delete cascade,
+    display_name         text        not null,
+    display_phone_number text        not null,
+    phone_number_id      text        not null unique,
+    waba_id              text        not null,
+    access_token         text        not null,
+    verify_token         text        not null,
+    meta_app_id          text,
+    health_status        text        not null default 'healthy',
+    is_default           boolean     not null default true,
+    is_active            boolean     not null default true,
+    created_at           timestamptz not null default now(),
+    updated_at           timestamptz not null default now(),
+
+    constraint hospital_whatsapp_health_known
+        check (health_status in ('healthy', 'invalid_token', 'rate_limited', 'unverified'))
+);
+
+create unique index idx_hospital_whatsapp_one_default
+    on meta.hospital_whatsapp (hospital_id)
+    where is_default = true;
+
+create trigger hospital_whatsapp_touch before update on meta.hospital_whatsapp
     for each row execute function meta.set_updated_at();
 
 commit;

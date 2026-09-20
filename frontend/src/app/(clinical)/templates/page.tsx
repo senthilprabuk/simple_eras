@@ -14,6 +14,7 @@ const TITLES: Record<TemplateKey, string> = {
   checkin_reminder: "Daily check-in reminder",
   missed_checkin: "Missed check-in",
   urgent_guidance: "Urgent symptom guidance",
+  checkin_confirmation: "Check-in confirmation",
 };
 
 const LANGUAGES: Language[] = ["en", "ta", "hi"];
@@ -174,8 +175,7 @@ export default function TemplatesPage() {
       <PageHeader title="WhatsApp templates" />
       <PageBody>
         <Notice icon="chat">
-          These are the messages patients will receive on WhatsApp. They are stored here for the WhatsApp integration,
-          which is not connected yet, so nothing is sent from this page.
+          These are the automated messages patients receive on WhatsApp throughout their recovery. Wording is sent dynamically based on the patient&apos;s language and post-operative day.
         </Notice>
 
         {error && <ErrorBanner message={error} onRetry={reload} />}

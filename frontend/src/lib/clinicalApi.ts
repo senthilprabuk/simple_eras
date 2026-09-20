@@ -383,7 +383,12 @@ export function updateHospital(changes: HospitalUpdate): Promise<HospitalProfile
 
 /* ----------------------------------------------------------- templates */
 
-export type TemplateKey = "enrollment_welcome" | "checkin_reminder" | "missed_checkin" | "urgent_guidance";
+export type TemplateKey =
+  | "enrollment_welcome"
+  | "checkin_reminder"
+  | "missed_checkin"
+  | "urgent_guidance"
+  | "checkin_confirmation";
 
 export interface TemplateEntry {
   template_key: TemplateKey;
@@ -462,5 +467,63 @@ export function changePassword(currentPassword: string, newPassword: string): Pr
   return request<void>("/api/v1/account/password", {
     method: "POST",
     body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+}
+
+/* ----------------------------------------------------------- whatsapp account */
+
+export interface WhatsAppAccount {
+  account_id: string;
+  hospital_id: number;
+  display_name: string;
+  display_phone_number: string;
+  phone_number_id: string;
+  waba_id: string;
+  meta_app_id: string | null;
+  access_token_masked: string;
+  verify_token: string;
+  health_status: "healthy" | "invalid_token" | "rate_limited" | "unverified";
+  is_active: boolean;
+  qr_code_url: string;
+  click_to_chat_url: string;
+  webhook_url: string;
+  created_at: string;
+}
+
+export interface SaveWhatsAppAccountPayload {
+  display_phone_number?: string;
+  display_name?: string;
+  phone_number_id: string;
+  waba_id: string;
+  access_token?: string;
+  verify_token: string;
+  meta_app_id?: string;
+}
+
+export interface TestSendResponse {
+  status: string;
+  message_id?: string;
+  error?: string;
+}
+
+export function fetchWhatsAppAccount(): Promise<WhatsAppAccount | null> {
+  return request<WhatsAppAccount | null>("/api/v1/whatsapp/account");
+}
+
+export function saveWhatsAppAccount(payload: SaveWhatsAppAccountPayload): Promise<WhatsAppAccount> {
+  return request<WhatsAppAccount>("/api/v1/whatsapp/account", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function disconnectWhatsAppAccount(): Promise<void> {
+  return request<void>("/api/v1/whatsapp/account", { method: "DELETE" });
+}
+
+export function sendTestWhatsAppMessage(toPhone: string, message?: string): Promise<TestSendResponse> {
+  return request<TestSendResponse>("/api/v1/whatsapp/test", {
+    method: "POST",
+    body: JSON.stringify({ to_phone: toPhone, message }),
   });
 }

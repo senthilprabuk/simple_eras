@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.services.rules_engine import evaluate_check_in
+from app.services.magic_token import validate_magic_token
+from app.services.whatsapp import send_whatsapp_text
 from app.schemas.checkin import (
     CheckInForm,
     CheckInReceipt,
@@ -37,10 +39,14 @@ POST_OP_DAY_SQL = "((now() AT TIME ZONE h.timezone)::date - e.discharge_date)::i
 EPISODE_SQL = f"""
     SELECT
         e.episode_id,
+        e.patient_id,
+        e.hospital_id,
         e.ruleset_id,
         e.monitoring_ends_on,
         e.status,
         p.patient_name,
+        p.phone_e164,
+        p.language_code,
         p.mrn,
         h.hospital_name,
         sp.procedure_code,
@@ -104,7 +110,8 @@ async def list_episodes(db: AsyncSession = Depends(get_db)):
 
 @router.get("/form", response_model=CheckInForm)
 async def get_checkin_form(
-    episode_id: UUID = Query(..., description="Episode to build the form for"),
+    episode_id: Optional[UUID] = Query(None, description="Episode to build the form for"),
+    token: Optional[str] = Query(None, description="Magic token from patient's WhatsApp message"),
     day: Optional[int] = Query(
         None,
         ge=0,
@@ -115,13 +122,29 @@ async def get_checkin_form(
 ):
     """
     Build the day-appropriate check-in form from the episode's approved ruleset.
+    Accepts either token (from patient WhatsApp link) or episode_id (for simulator).
 
     Only parameters whose collection window (collect_from_day..collect_to_day)
     contains the effective day are returned, ordered and grouped exactly as
     meta.procedure_parameter specifies.
     """
-    episode = await _load_episode(db, episode_id)
-    effective_day = day if day is not None else episode["post_op_day"]
+    if token:
+        token_data = validate_magic_token(token)
+        target_episode_id = token_data["episode_id"]
+        effective_day = token_data["day"]
+        is_simulated = False
+    elif episode_id is not None:
+        target_episode_id = episode_id
+        target_row = await _load_episode(db, target_episode_id)
+        effective_day = day if day is not None else target_row["post_op_day"]
+        is_simulated = day is not None and day != target_row["post_op_day"]
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either episode_id or token is required",
+        )
+
+    episode = await _load_episode(db, target_episode_id)
 
     params_result = await db.execute(
         text(
@@ -227,7 +250,7 @@ async def get_checkin_form(
         ),
         ruleset_id=episode["ruleset_id"],
         effective_day=effective_day,
-        simulated=day is not None and day != episode["post_op_day"],
+        simulated=is_simulated,
         already_submitted_today=submitted.first() is not None,
         sections=sections,
     )
@@ -387,6 +410,93 @@ async def submit_checkin(payload: CheckInSubmit, db: AsyncSession = Depends(get_
             for v in payload.values
         },
     )
+
+    # For live (non-simulated) submissions, send immediate WhatsApp feedback
+    if not payload.simulated and episode.get("phone_e164"):
+        first_name = (episode["patient_name"] or "").split()[0] or "Patient"
+        phone = episode["phone_e164"]
+        h_name = episode.get("hospital_name") or "St. Mary's Orthopedic Center"
+        day = row["day_after_discharge"]
+
+        if evaluation.tier == "normal":
+            tpl_row = (await db.execute(
+                text("""
+                    SELECT body FROM meta.message_template
+                    WHERE hospital_id = :h AND template_key = 'checkin_confirmation'
+                      AND language_code = :lang AND is_active = true
+                """),
+                {"h": episode["hospital_id"], "lang": episode["language_code"] or "en"},
+            )).mappings().first()
+
+            if tpl_row and tpl_row["body"]:
+                feedback_body = (
+                    tpl_row["body"]
+                    .replace("{patient_first_name}", first_name)
+                    .replace("{post_op_day}", str(day))
+                    .replace("{hospital_name}", h_name)
+                )
+            else:
+                feedback_body = (
+                    f"Thank you {first_name}! ✅\n\n"
+                    f"Your Day {day} recovery check-in has been received. "
+                    f"Your knee recovery indicators are looking good. "
+                    f"Keep up with your rehabilitation exercises!"
+                )
+            msg_type = "checkin_confirmation"
+        else:
+            tpl_row = (await db.execute(
+                text("""
+                    SELECT body FROM meta.message_template
+                    WHERE hospital_id = :h AND template_key = 'urgent_guidance'
+                      AND language_code = :lang AND is_active = true
+                """),
+                {"h": episode["hospital_id"], "lang": episode["language_code"] or "en"},
+            )).mappings().first()
+
+            if tpl_row and tpl_row["body"]:
+                feedback_body = (
+                    tpl_row["body"]
+                    .replace("{patient_first_name}", first_name)
+                    .replace("{post_op_day}", str(day))
+                    .replace("{hospital_name}", h_name)
+                )
+            else:
+                feedback_body = (
+                    f"Thank you {first_name}.\n\n"
+                    f"You reported a symptom that requires clinical review. "
+                    f"Our orthopedic nursing team at {h_name} has been notified and may call you shortly. "
+                    f"If you experience chest pain, severe shortness of breath, or sudden calf swelling, "
+                    f"please call the hospital directly or emergency services immediately."
+                )
+            msg_type = "urgent_guidance"
+
+        wa_result = await send_whatsapp_text(to=phone, body=feedback_body)
+
+        await db.execute(
+            text("""
+                INSERT INTO txn.patient_message (
+                    episode_id, patient_id, hospital_id, message_type,
+                    day_after_discharge, phone_e164, channel, direction,
+                    body, meta_message_id, status, sent_at
+                ) VALUES (
+                    :episode_id, :patient_id, :hospital_id, :msg_type,
+                    :day, :phone, 'whatsapp', 'outbound',
+                    :body, :meta_id, :status,
+                    CASE WHEN :status = 'sent' THEN now() ELSE null END
+                )
+            """),
+            {
+                "episode_id": payload.episode_id,
+                "patient_id": episode["patient_id"],
+                "hospital_id": episode["hospital_id"],
+                "msg_type": msg_type,
+                "day": day,
+                "phone": phone,
+                "body": feedback_body,
+                "meta_id": wa_result.get("message_id"),
+                "status": wa_result.get("status", "sent"),
+            },
+        )
 
     await db.commit()
 

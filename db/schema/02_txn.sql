@@ -327,4 +327,50 @@ create index notification_queued
     on txn.alert_notification (created_at)
     where status = 'queued';
 
+
+-- ---------------------------------------------------------------------
+-- patient_message   (WhatsApp check-in reminders and confirmations)
+-- ---------------------------------------------------------------------
+create table txn.patient_message (
+    message_id           uuid        primary key default gen_random_uuid(),
+    episode_id           uuid        not null references txn.patient_episode(episode_id) on delete cascade,
+    patient_id           uuid        not null references txn.patient(patient_id),
+    hospital_id          integer     not null references meta.hospital(hospital_id),
+    message_type         text        not null,
+    day_after_discharge  integer     not null,
+    phone_e164           text        not null,
+    channel              text        not null default 'whatsapp',
+    direction            text        not null default 'outbound',
+    body                 text        not null,
+    magic_token          text,
+    magic_url            text,
+    meta_message_id      text,
+    status               text        not null default 'queued',
+    error_message        text,
+    sent_at              timestamptz,
+    delivered_at         timestamptz,
+    read_at              timestamptz,
+    created_at           timestamptz not null default now(),
+
+    constraint patient_message_type_known
+        check (message_type in ('checkin_reminder', 'checkin_confirmation', 'urgent_guidance', 'missed_checkin', 'followup_nudge', 'inbound')),
+    constraint patient_message_channel_known
+        check (channel in ('whatsapp', 'sms')),
+    constraint patient_message_direction_known
+        check (direction in ('outbound', 'inbound')),
+    constraint patient_message_status_known
+        check (status in ('queued', 'sent', 'delivered', 'read', 'failed'))
+);
+
+create unique index patient_message_unique_daily_reminder
+    on txn.patient_message (episode_id, day_after_discharge, message_type)
+    where message_type = 'checkin_reminder';
+
+create index patient_message_by_meta_id
+    on txn.patient_message (meta_message_id)
+    where meta_message_id is not null;
+
+create index patient_message_by_episode
+    on txn.patient_message (episode_id, created_at desc);
+
 commit;

@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Literal, Union
+from typing import List, Literal, Optional, Union
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url, URL
@@ -40,6 +40,18 @@ class Settings(BaseSettings):
     # "disabled" leaves escalation notifications queued and logs a warning;
     # "log" writes each one to the application log and marks it sent.
     NOTIFICATION_PROVIDER: Literal["disabled", "log"] = "disabled"
+
+    # WhatsApp Cloud API & Magic Link Configuration
+    # "log" prints messages to application log with mock IDs (safe for local development)
+    # "meta" dispatches through Meta Graph API
+    WHATSAPP_PROVIDER: Literal["disabled", "log", "meta"] = "log"
+    META_PHONE_NUMBER_ID: Optional[str] = None
+    META_ACCESS_TOKEN: Optional[str] = None
+    META_WEBHOOK_VERIFY_TOKEN: Optional[str] = "eras_webhook_verify_token"
+    META_APP_SECRET: Optional[str] = None
+    META_API_VERSION: str = "v21.0"
+    FRONTEND_BASE_URL: str = "http://localhost:3000"
+    DAILY_DISPATCH_INTERVAL_SECS: int = 60
 
     LOG_LEVEL: str = "INFO"
 

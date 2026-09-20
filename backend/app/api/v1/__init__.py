@@ -12,6 +12,8 @@ from app.api.v1.reports import router as reports_router
 from app.api.v1.clinicians import router as clinicians_router
 from app.api.v1.checkin import router as checkin_router
 from app.api.v1.app_admin import router as app_admin_router
+from app.api.v1.whatsapp import router as whatsapp_router
+from app.api.v1.whatsapp_account import router as whatsapp_account_router
 
 api_v1_router = APIRouter(prefix="/api/v1")
 
@@ -29,6 +31,8 @@ for router in (
     clinicians_router,
     checkin_router,
     app_admin_router,
+    whatsapp_router,
+    whatsapp_account_router,
 ):
     api_v1_router.include_router(router)
 

@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
-TemplateKey = Literal["enrollment_welcome", "checkin_reminder", "missed_checkin", "urgent_guidance"]
+TemplateKey = Literal["enrollment_welcome", "checkin_reminder", "missed_checkin", "urgent_guidance", "checkin_confirmation"]
 TemplateLanguage = Literal["en", "ta", "hi"]
 
 # Everything the sender can fill in. Anything else in braces is rejected, so a
@@ -20,6 +20,7 @@ TEMPLATE_PURPOSES: Dict[str, str] = {
     "checkin_reminder": "Sent each morning the check-in opens",
     "missed_checkin": "Sent when a check-in has not arrived by the end of the day",
     "urgent_guidance": "Sent straight after a patient reports an emergency symptom",
+    "checkin_confirmation": "Sent immediately after a patient completes their daily check-in",
 }
 
 PLACEHOLDER_PATTERN = re.compile(r"\{([^{}]*)\}")
