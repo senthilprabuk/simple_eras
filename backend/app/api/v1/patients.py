@@ -39,6 +39,24 @@ def _like_pattern(term: str) -> str:
     escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
 
+def _check_in_today(row, monitored_days: int) -> str:
+    """
+    Whether today's check-in is in, from the post-operative day the row already
+    carries. That day is computed in the hospital's own timezone, which is the
+    reason this is answered here and not in the browser: a workstation an hour
+    ahead would call a patient overdue who is not.
+
+    A closed episode, or one whose monitoring window has passed, is not waiting
+    on anything, so it reads as not_due rather than as a patient who has failed
+    to report.
+    """
+    day = row["post_op_day"]
+    if row["status"] != "active" or day < 0 or day > monitored_days:
+        return "not_due"
+    if row["last_day"] == day:
+        return "done"
+    return "none_yet" if not row["check_in_days"] else "pending"
+
 @router.get("", response_model=PatientListResponse)
 async def list_patients(
     status_filter: Literal["active", "completed", "withdrawn", "all"] = Query("active", alias="status"),
@@ -70,8 +88,8 @@ async def list_patients(
 
     rows = (await db.execute(text(f"""
         SELECT
-            e.episode_id, p.patient_id, p.patient_name, p.mrn, p.language_code,
-            sp.procedure_code, e.discharge_date, e.monitoring_ends_on, e.status,
+            e.episode_id, p.patient_id, p.patient_name, p.mrn, p.phone_e164, p.language_code,
+            sp.procedure_code, e.operative_side, e.discharge_date, e.monitoring_ends_on, e.status,
             e.created_at AS enrolled_at, au.full_name AS enrolled_by_name,
             ((now() AT TIME ZONE h.timezone)::date - e.discharge_date) AS post_op_day,
             ci.last_day, ci.last_at, coalesce(ci.days, 0) AS check_in_days,
@@ -108,8 +126,11 @@ async def list_patients(
             patient_id=r["patient_id"],
             patient_name=r["patient_name"],
             mrn=r["mrn"],
+            phone_e164=r["phone_e164"],
             language_code=r["language_code"],
             procedure_code=r["procedure_code"],
+            operative_side=r["operative_side"],
+            check_in_today=_check_in_today(r, monitored_days),
             discharge_date=r["discharge_date"],
             monitoring_ends_on=r["monitoring_ends_on"],
             status=r["status"],

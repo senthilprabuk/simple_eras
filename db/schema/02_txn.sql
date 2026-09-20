@@ -79,6 +79,10 @@ create table txn.patient_episode (
     hospital_id        integer     not null references meta.hospital(hospital_id),
     procedure_id       integer     not null references meta.surgical_procedure(procedure_id),
     ruleset_id         integer     not null references meta.ruleset(ruleset_id),
+    -- which knee. Calf pain in the operated leg is usually expected oedema;
+    -- the same answer about the other leg points at a clot, and the answer
+    -- alone cannot tell them apart. Null where it predates being captured.
+    operative_side     text,
     surgery_date       date        not null,
     discharge_date     date        not null,
     monitoring_ends_on date        not null,
@@ -92,6 +96,8 @@ create table txn.patient_episode (
     created_at         timestamptz not null default now(),
 
     constraint episode_status_known    check (status in ('active','completed','withdrawn')),
+    constraint episode_operative_side_known
+        check (operative_side is null or operative_side in ('left','right','bilateral')),
     constraint episode_dates_ordered   check (discharge_date >= surgery_date),
     constraint episode_end_after_disch check (monitoring_ends_on > discharge_date),
     constraint episode_checkin_window_ordered check (checkin_window_end > checkin_window_start),

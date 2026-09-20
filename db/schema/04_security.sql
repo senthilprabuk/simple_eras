@@ -225,7 +225,8 @@ insert into meta.schema_migration (version, name) values
     ('006', '006_enrollment_safety_data'),
     ('007', '007_app_admin'),
     ('008', '008_rule_direction'),
-    ('009', '009_composite_signals')
+    ('009', '009_composite_signals'),
+    ('010', '010_operative_side')
 on conflict (version) do nothing;
 
 commit;

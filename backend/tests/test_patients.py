@@ -1,5 +1,7 @@
 from uuid import uuid4
 
+from sqlalchemy import text
+
 from tests.support import episode_for_mrn
 
 
@@ -111,3 +113,61 @@ async def test_timeline_of_another_hospitals_patient_is_not_found(client, db, h2
 
 async def test_timeline_of_unknown_episode_is_not_found(client, nurse_headers):
     assert (await client.get(f"/api/v1/patients/{uuid4()}/timeline", headers=nurse_headers)).status_code == 404
+
+
+async def _listed(client, headers, mrn, status="active"):
+    data = (await client.get(f"/api/v1/patients?status={status}", headers=headers)).json()
+    return next(p for p in data["items"] if p["mrn"] == mrn)
+
+
+async def test_list_carries_the_number_to_call_and_which_knee_it_was(client, nurse_headers):
+    """
+    Both are on the row because both decide what the nurse does next: a poor
+    adherence figure is acted on by phoning, and calf symptoms are read against
+    the operated leg. The side is composed with the procedure code at display
+    time rather than stored as "Right TKR", so another procedure reads correctly.
+    """
+    row = await _listed(client, nurse_headers, "FX-03")
+    assert row["phone_e164"].startswith("+91")
+    assert row["operative_side"] == "right"
+    assert row["procedure_code"] == "TKR"
+
+
+async def test_todays_check_in_is_answered_on_the_row_rather_than_left_as_a_date(client, db, nurse_headers):
+    """
+    Four states, because "pending" and "not expected at all" are different
+    things and only one of them is a patient to chase. Computed from the
+    post-operative day, which is the hospital's own date: a workstation an hour
+    ahead would otherwise call a patient overdue who is not.
+    """
+    # Every fixture reports to day 21, which is today for them.
+    assert (await _listed(client, nurse_headers, "FX-01"))["check_in_today"] == "done"
+
+    # The drop-out stopped at day 5 and owes today.
+    assert (await _listed(client, nurse_headers, "FX-06"))["check_in_today"] == "pending"
+
+    # The remaining two states need this patient changed, and the fixture
+    # database is built once for the whole session, so both changes are made
+    # reversible and undone: superseding the check-ins hides them from the list
+    # exactly as deleting would, and unlike deleting it can be put back.
+    episode_id = await episode_for_mrn(db, "FX-06")
+    try:
+        await db.execute(text("UPDATE txn.patient_check_in SET is_superseded = true WHERE episode_id = :e"),
+                         {"e": episode_id})
+        await db.commit()
+        assert (await _listed(client, nurse_headers, "FX-06"))["check_in_today"] == "none_yet"
+
+        # A closed episode is not waiting on anything, so it is not one to chase.
+        await db.execute(text("UPDATE txn.patient_episode SET status = 'completed' WHERE episode_id = :e"),
+                         {"e": episode_id})
+        await db.commit()
+        assert (await _listed(client, nurse_headers, "FX-06", status="all"))["check_in_today"] == "not_due"
+    finally:
+        await db.execute(text("UPDATE txn.patient_check_in SET is_superseded = false WHERE episode_id = :e"),
+                         {"e": episode_id})
+        await db.execute(text("UPDATE txn.patient_episode SET status = 'active' WHERE episode_id = :e"),
+                         {"e": episode_id})
+        await db.commit()
+
+    # Back as it was, so whatever runs next sees the fixture the seed describes.
+    assert (await _listed(client, nurse_headers, "FX-06"))["check_in_today"] == "pending"

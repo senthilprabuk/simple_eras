@@ -5,6 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, BeforeValidator, Field, StringConstraints, field_validator, model_validator
 
 from app.schemas.checkin import OrdinalOption
+from app.schemas.episode import OperativeSide
 
 Language = Literal["en", "ta", "hi"]
 Gender = Literal["male", "female", "other", "unknown"]  # FHIR administrative gender
@@ -91,6 +92,9 @@ class EnrollmentRequest(BaseModel):
     emergency_contacts: List[EmergencyContactIn] = Field(..., min_length=1, max_length=3,
                                                          description="In the order to call them")
     procedure_code: str = Field(..., min_length=1, max_length=20)
+    # Required even though the column is nullable: the null is there for
+    # episodes enrolled before it was captured, not a gap worth carrying on.
+    operative_side: OperativeSide = Field(..., description="Which knee is being replaced")
     surgery_date: date
     discharge_date: date
     checkin_window: CheckInWindowCode

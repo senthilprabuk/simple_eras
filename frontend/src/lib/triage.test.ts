@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { ParameterReading } from "@/lib/api";
 import {
   currentAgeSecs,
+  domainOf,
   formatDuration,
   formatReading,
+  groupReasons,
   initials,
   isConcerning,
   matchesSearch,
@@ -122,5 +124,43 @@ describe("readings", () => {
     expect(isConcerning({ ...calf, current: false })).toBe(false);
     expect(isConcerning({ ...calf, current: null })).toBe(false);
     expect(isConcerning(temp)).toBe(false);
+  });
+});
+
+describe("knee recovery domains", () => {
+  const reason = (name: string) => ({ name, detail: name.replace(/_/g, " ") });
+
+  it("files each signal under the complication it points at", () => {
+    expect(domainOf(reason("calf_pain"))).toBe("dvt");
+    expect(domainOf(reason("breathless"))).toBe("dvt");
+    expect(domainOf(reason("drainage"))).toBe("infection");
+    expect(domainOf(reason("fever_returned"))).toBe("infection");
+    expect(domainOf(reason("mobility_regression"))).toBe("mobility");
+    expect(domainOf(reason("missed_check_in"))).toBe("missed");
+  });
+
+  it("leaves a sign of everything ungrouped rather than claiming a domain", () => {
+    // Pain and a raised pulse point at sepsis and at a clot equally, so filing
+    // either under one heading would say more than the reading supports.
+    expect(domainOf(reason("pain"))).toBe("other");
+    expect(domainOf(reason("hr"))).toBe("other");
+  });
+
+  it("puts an unknown signal in other rather than dropping it", () => {
+    expect(domainOf(reason("something_added_later"))).toBe("other");
+  });
+
+  it("groups most time-critical first and keeps every reason", () => {
+    const reasons = [reason("drainage"), reason("pain"), reason("calf_pain"), reason("chills")];
+    const groups = groupReasons(reasons);
+
+    expect(groups.map((g) => g.domain)).toEqual(["dvt", "infection", "other"]);
+    expect(groups.flatMap((g) => g.reasons)).toHaveLength(reasons.length);
+    expect(groups[1].reasons.map((r) => r.name)).toEqual(["drainage", "chills"]);
+  });
+
+  it("skips a domain with nothing in it", () => {
+    expect(groupReasons([reason("calf_pain")]).map((g) => g.domain)).toEqual(["dvt"]);
+    expect(groupReasons([])).toEqual([]);
   });
 });

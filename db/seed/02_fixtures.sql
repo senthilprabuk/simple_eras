@@ -72,6 +72,12 @@ create temporary table fx_discrete (
 
 create temporary table fx_gap (fixture text, day int) on commit drop;
 
+-- Which knee was replaced. Stated per fixture rather than derived from a hash:
+-- a reader checking what a calf-pain fixture is meant to show needs to see the
+-- side written down, not work it out. f15 is bilateral so that case is covered
+-- somewhere.
+create temporary table fx_side (fixture text primary key, side text) on commit drop;
+
 -- Questions a fixture deliberately leaves blank while still submitting the
 -- check-in. Only the boolean insert needs this: it fills every symptom across
 -- the collect window, so silence has to be asked for. A numeric is left blank
@@ -149,6 +155,13 @@ insert into fx_person values
  ('f13_out_of_window', 'male',   '11 Vadavalli Main Road',         '641041', 'Selvi Ganesh',     'spouse'),
  ('f14_slow_creep',    'female', '19 Marudhamalai Road',           '641046', 'Prakash Rajan',    'spouse'),
  ('f15_partial',       'female', '6 Tatabad, Gandhipuram',         '641012', 'Vidya Raghavan',   'daughter');
+
+insert into fx_side (fixture, side) values
+ ('f01_smooth','right'),   ('f02_slow_burn','left'),     ('f03_dvt','right'),
+ ('f04_pe','left'),        ('f05_erratic','right'),      ('f06_dropout','left'),
+ ('f07_combination','right'), ('f08_early_fever','left'), ('f09_collect_score','right'),
+ ('f11_one_day_spike','left'), ('f12_mobility_drop','right'), ('f13_out_of_window','left'),
+ ('f14_slow_creep','right'),   ('f15_partial','bilateral');
 
 -- ---- numeric curves (spo2 runs to day 21, inside its collect window of 0-42)
 insert into fx_curve (fixture, parameter_code, day_from, day_to, start_val, end_val, noise) values
@@ -397,14 +410,15 @@ from fx_person x;
 -- enrolled_by is a foreign key to meta.admin_user. Fixtures are loaded by
 -- a script, not enrolled by a clinician, so it is left null.
 insert into txn.patient_episode
-    (episode_id, patient_id, hospital_id, procedure_id, ruleset_id,
+    (episode_id, patient_id, hospital_id, procedure_id, ruleset_id, operative_side,
      surgery_date, discharge_date, monitoring_ends_on,
      consent_version, consent_at, enrolled_by, status)
 select md5(f.fixture || ':ep')::uuid, md5(f.fixture)::uuid,
-       h.hospital_id, sp.procedure_id, r.ruleset_id,
+       h.hospital_id, sp.procedure_id, r.ruleset_id, side.side,
        c.today - 25, c.today - 21, c.today + 63,
        'v1', now() - interval '25 days', null, 'active'
 from fx_patient f
+join fx_side side on side.fixture = f.fixture
 cross join fx_clock c
 cross join (select hospital_id from meta.hospital where hospital_code = 'CBE-01') h
 cross join (select procedure_id from meta.surgical_procedure where procedure_code = 'TKR') sp

@@ -6,13 +6,47 @@ import { request, type Outcome, type Reason, type Tier } from "@/lib/api";
 
 export type EpisodeStatus = "active" | "completed" | "withdrawn";
 
+/** Which knee was replaced. Null for episodes enrolled before it was captured. */
+export type OperativeSide = "left" | "right" | "bilateral";
+
+/**
+ * The adjective only. It is composed with the episode's own procedure code at
+ * the point of display — "Right TKR" — rather than baked in here, because the
+ * hospital may monitor more than one procedure and a hip would read wrongly.
+ */
+export const SIDE_WORD: Record<OperativeSide, string> = {
+  left: "Left",
+  right: "Right",
+  bilateral: "Bilateral",
+};
+
+export function sideLabel(side: OperativeSide | null, procedureCode: string): string {
+  return side ? `${SIDE_WORD[side]} ${procedureCode}` : procedureCode;
+}
+
+/**
+ * Whether today's check-in is in. The server decides this, because "today" is
+ * the hospital's own date and a workstation in another timezone would disagree
+ * about which post-operative day it is.
+ */
+export type CheckInToday = "done" | "pending" | "none_yet" | "not_due";
+
+export const CHECK_IN_TODAY: Record<CheckInToday, { label: string; className: string }> = {
+  done: { label: "Done today", className: "bg-primary/10 text-primary" },
+  pending: { label: "Pending today", className: "bg-tertiary/15 text-tertiary" },
+  none_yet: { label: "None yet", className: "bg-surface-bright text-on-surface-variant" },
+  not_due: { label: "Not due", className: "bg-surface-bright text-outline" },
+};
+
 export interface PatientListItem {
   episode_id: string;
   patient_id: string;
   patient_name: string;
   mrn: string | null;
+  phone_e164: string | null;
   language_code: string;
   procedure_code: string;
+  operative_side: OperativeSide | null;
   discharge_date: string;
   monitoring_ends_on: string;
   status: EpisodeStatus;
@@ -21,6 +55,7 @@ export interface PatientListItem {
   enrolled_by_name: string | null;
   last_check_in_day: number | null;
   last_check_in_at: string | null;
+  check_in_today: CheckInToday;
   check_in_days: number;
   expected_check_in_days: number;
   adherence_pct: number | null;
@@ -110,6 +145,9 @@ export interface AlertHistoryItem {
   episode_id: string;
   patient_name: string;
   mrn: string | null;
+  phone_e164: string | null;
+  operative_side: OperativeSide | null;
+  procedure_code: string;
   tier: Tier;
   status: AlertStatus;
   day_after_discharge: number;
@@ -214,6 +252,7 @@ export interface EnrollmentRequest {
   email: string | null;
   emergency_contacts: EmergencyContactInput[];
   procedure_code: string;
+  operative_side: OperativeSide;
   surgery_date: string;
   discharge_date: string;
   checkin_window: CheckInWindowCode;

@@ -40,6 +40,18 @@ export function formatNumber(value: number): string {
   return value.toLocaleString("en-GB");
 }
 
+/**
+ * An E.164 number spaced the way it is read aloud: "+919862817328" becomes
+ * "+91 98628 17328". Only the ten-digit Indian pattern is grouped, because
+ * guessing at another country's grouping reads worse than leaving it alone.
+ * The value itself is never altered — a tel: link uses the raw string.
+ */
+export function formatPhone(e164: string | null | undefined): string {
+  if (!e164) return "";
+  const india = /^\+91(\d{5})(\d{5})$/.exec(e164);
+  return india ? `+91 ${india[1]} ${india[2]}` : e164;
+}
+
 export const LANGUAGE_NAMES: Record<string, string> = { en: "English", ta: "Tamil", hi: "Hindi" };
 
 /** FHIR administrative gender. */

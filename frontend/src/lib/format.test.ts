@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatAddress, formatDate, formatPct, formatSexAge, formatShortDate, formatTimeWindow } from "@/lib/format";
+import { formatAddress, formatDate, formatPct, formatPhone, formatSexAge, formatShortDate, formatTimeWindow } from "@/lib/format";
 
 describe("calendar dates", () => {
   it("shows the date as written, whatever the viewer's timezone", () => {
@@ -48,5 +48,21 @@ describe("formatSexAge", () => {
 describe("formatTimeWindow", () => {
   it("drops the seconds", () => {
     expect(formatTimeWindow("08:00:00", "10:00:00")).toBe("08:00–10:00");
+  });
+});
+
+describe("formatPhone", () => {
+  it("spaces an Indian number the way it is read aloud", () => {
+    expect(formatPhone("+919862817328")).toBe("+91 98628 17328");
+  });
+
+  it("leaves a number it cannot group alone rather than guessing", () => {
+    expect(formatPhone("+14155550123")).toBe("+14155550123");
+    expect(formatPhone("+9198628")).toBe("+9198628");
+  });
+
+  it("has nothing to show for a patient with no number on file", () => {
+    expect(formatPhone(null)).toBe("");
+    expect(formatPhone(undefined)).toBe("");
   });
 });

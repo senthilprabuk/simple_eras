@@ -35,6 +35,7 @@ def _form(today: date, **overrides):
         "email": "lakshmi@example.com",
         "emergency_contacts": [{"name": "Arun Narayanan", "relationship": "son", "phone_e164": "+919812345678"}],
         "procedure_code": "TKR",
+        "operative_side": "right",
         "surgery_date": str(today - timedelta(days=4)),
         "discharge_date": str(today - timedelta(days=2)),
         "checkin_window": "evening",

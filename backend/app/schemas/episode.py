@@ -1,10 +1,15 @@
 from datetime import date, datetime, time
-from typing import List, Optional, Union
+from typing import List, Literal, Optional, Union
 from uuid import UUID
 from pydantic import BaseModel, Field
 
 # bool first: in smart-mode unions an exact bool must not be read as a number.
 ReadingValue = Union[bool, float, str]
+
+# Mirrors episode_operative_side_known on txn.patient_episode. Defined here
+# rather than in each schema that reports it, so the three screens showing a
+# patient's operative knee cannot drift apart on what the values are.
+OperativeSide = Literal["left", "right", "bilateral"]
 
 class ParameterReading(BaseModel):
     """A parameter's discharge baseline beside the latest submitted value."""

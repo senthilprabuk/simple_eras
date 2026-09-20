@@ -51,7 +51,8 @@ async def list_alerts(
 
     rows = (await db.execute(text(f"""
         SELECT
-            a.alert_id, a.episode_id, p.patient_name, p.mrn, a.tier, a.status,
+            a.alert_id, a.episode_id, p.patient_name, p.mrn, p.phone_e164,
+            e.operative_side, sp.procedure_code, a.tier, a.status,
             ev.day_after_discharge, ev.reasons, a.raised_at, a.escalated_at,
             a.acknowledged_at, ack.full_name AS acknowledged_by_name,
             extract(epoch FROM a.acknowledged_at - a.raised_at)::int AS ack_secs,
@@ -60,6 +61,7 @@ async def list_alerts(
         FROM txn.alert a
         JOIN txn.patient_episode e     ON e.episode_id = a.episode_id
         JOIN txn.patient p             ON p.patient_id = e.patient_id
+        JOIN meta.surgical_procedure sp ON sp.procedure_id = e.procedure_id
         JOIN meta.hospital h           ON h.hospital_id = e.hospital_id
         JOIN txn.check_in_evaluation ev ON ev.evaluation_id = a.evaluation_id
         LEFT JOIN meta.admin_user ack  ON ack.admin_user_id = a.acknowledged_by

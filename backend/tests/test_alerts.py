@@ -129,3 +129,38 @@ async def test_resolve_across_hospitals_is_not_found(client, db, h2_headers):
     res = await client.post(f"/api/v1/alerts/{alert_id}/resolve", json={"outcome": "reassured"}, headers=h2_headers)
     assert res.status_code == 404
     assert (await _alert_row(db, alert_id))["status"] == "open"
+
+
+async def test_history_carries_the_operative_side_and_a_number_to_call(client, db, nurse_headers):
+    """
+    Two facts a nurse needs before acting, on the row rather than a click away.
+
+    Calf pain reads differently depending on which leg it is, and an emergency
+    is answered by phoning the patient, so both belong beside the alert. The
+    side is nullable for episodes enrolled before it was recorded, which the
+    screen shows as "side not recorded" rather than guessing.
+    """
+    episode_id = await episode_for_mrn(db, "FX-03")
+    await create_alert(db, episode_id, tier="critical")
+
+    items = (await client.get("/api/v1/alerts", headers=nurse_headers)).json()["items"]
+    row = next(a for a in items if a["mrn"] == "FX-03")
+
+    assert row["operative_side"] == "right"
+    assert row["procedure_code"] == "TKR"
+    assert row["phone_e164"].startswith("+91")
+
+    # The fixture database is built once for the whole session, so anything this
+    # test changes it must change back: a patient left without a side here fails
+    # an assertion in another file that has no idea this test exists.
+    try:
+        await db.execute(text("UPDATE txn.patient_episode SET operative_side = NULL WHERE episode_id = :e"),
+                         {"e": episode_id})
+        await db.commit()
+
+        items = (await client.get("/api/v1/alerts", headers=nurse_headers)).json()["items"]
+        assert next(a for a in items if a["mrn"] == "FX-03")["operative_side"] is None
+    finally:
+        await db.execute(text("UPDATE txn.patient_episode SET operative_side = :s WHERE episode_id = :e"),
+                         {"s": row["operative_side"], "e": episode_id})
+        await db.commit()

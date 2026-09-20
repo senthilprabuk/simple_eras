@@ -4,6 +4,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.dashboard import Reason
+from app.schemas.episode import OperativeSide
 
 # Mirrors the alert_outcome_known constraint on txn.alert.
 Outcome = Literal["reassured", "plan_adjusted", "same_day_review", "emergency"]
@@ -34,6 +35,11 @@ class AlertHistoryItem(BaseModel):
     episode_id: UUID
     patient_name: str
     mrn: Optional[str] = None
+    phone_e164: Optional[str] = Field(
+        None, description="The patient's own number, so an emergency can be answered without leaving the list")
+    operative_side: Optional[OperativeSide] = Field(
+        None, description="Which knee was replaced; null for episodes enrolled before it was captured")
+    procedure_code: str = Field(..., description="Composed with the side for display, so a hip never reads as a TKR")
     tier: str
     status: str
     day_after_discharge: int

@@ -4,10 +4,10 @@ import React, { useCallback, useState } from "react";
 import Link from "next/link";
 import { TierBadge } from "@/components/RiskQueueTable";
 import { ErrorBanner, Loading, PageBody, PageHeader, Segmented, StatusPill, secondaryButtonClass } from "@/components/ui";
-import type { Tier } from "@/lib/api";
-import { fetchAlertHistory, type AlertHistoryItem, type AlertStatus } from "@/lib/clinicalApi";
-import { OUTCOME_LABELS, formatDateTime } from "@/lib/format";
-import { formatDuration, reasonText } from "@/lib/triage";
+import { acknowledgeAlert, type Tier } from "@/lib/api";
+import { fetchAlertHistory, sideLabel, type AlertHistoryItem, type AlertStatus } from "@/lib/clinicalApi";
+import { OUTCOME_LABELS, formatDateTime, formatPhone } from "@/lib/format";
+import { DOMAIN_META, formatDuration, groupReasons, reasonText } from "@/lib/triage";
 import { useApiData } from "@/lib/useApiData";
 
 const PAGE = 100;
@@ -19,9 +19,54 @@ function initialPatientFilter(): { episodeId: string | null; name: string | null
   return { episodeId: params.get("episode"), name: params.get("patient") };
 }
 
-function Acknowledgement({ alert }: { alert: AlertHistoryItem }) {
+/**
+ * Acknowledging from the list rather than the dashboard.
+ *
+ * The escalation sweep pages every admin at the hospital once an open critical
+ * alert passes its SLA, so the cost of making a clinician navigate elsewhere to
+ * stop that timer is measured in pages to colleagues. `reload` rather than local
+ * state after success, so the row shows the server's own acknowledged_at.
+ */
+function AcknowledgeButton({ alert, onDone }: { alert: AlertHistoryItem; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const acknowledge = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await acknowledgeAlert(alert.alert_id);
+      onDone();
+    } catch (err) {
+      // 409 means someone else got there first; reloading shows their name.
+      setError(err instanceof Error ? err.message : "Could not acknowledge");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        className={secondaryButtonClass}
+        disabled={busy}
+        onClick={acknowledge}
+        aria-label={`Acknowledge the ${alert.tier} alert for ${alert.patient_name}`}
+      >
+        {busy ? "Acknowledging…" : "Acknowledge"}
+      </button>
+      {error && <p className="font-body-sm text-error mt-1">{error}</p>}
+    </>
+  );
+}
+
+function Acknowledgement({ alert, onDone }: { alert: AlertHistoryItem; onDone: () => void }) {
   if (alert.ack_secs === null) {
-    return <span className="font-body-sm text-outline italic">Not acknowledged</span>;
+    return alert.status === "open" ? (
+      <AcknowledgeButton alert={alert} onDone={onDone} />
+    ) : (
+      <span className="font-body-sm text-outline italic">Not acknowledged</span>
+    );
   }
   const late = alert.ack_secs > alert.ack_window_secs;
   return (
@@ -32,6 +77,38 @@ function Acknowledgement({ alert }: { alert: AlertHistoryItem }) {
         {late && ` · over the ${formatDuration(alert.ack_window_secs)} SLA`}
       </div>
     </>
+  );
+}
+
+/**
+ * Reasons under the complication they point at, most time-critical domain
+ * first. The individual findings stay visible underneath: the grouping is there
+ * to say what the picture is, not to replace the reading behind it.
+ */
+function Reasons({ alert }: { alert: AlertHistoryItem }) {
+  return (
+    <div className="flex flex-col gap-2 max-w-xs">
+      {groupReasons(alert.reasons).map(({ domain, reasons }) => (
+        <div key={domain}>
+          <div className="inline-flex items-center gap-1 font-label-sm text-on-surface-variant uppercase tracking-wider">
+            <span className="material-symbols-outlined text-[14px]" aria-hidden="true">
+              {DOMAIN_META[domain].icon}
+            </span>
+            {DOMAIN_META[domain].label}
+          </div>
+          <div className="flex flex-wrap gap-1.5 mt-1">
+            {reasons.map((r, i) => (
+              <span
+                key={i}
+                className="px-2 py-0.5 rounded bg-surface-bright border border-outline-variant/40 font-body-sm text-on-surface"
+              >
+                {reasonText(r)}
+              </span>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -158,7 +235,27 @@ export default function AlertsPage() {
                         <Link href={`/patients/${a.episode_id}`} className="font-title-sm text-on-surface hover:text-primary hover:underline">
                           {a.patient_name}
                         </Link>
-                        <div className="font-body-sm text-on-surface-variant">MRN {a.mrn ?? "not recorded"}</div>
+                        <div className="font-body-sm text-on-surface-variant">
+                          MRN {a.mrn ?? "not recorded"}
+                          {" · "}
+                          {a.operative_side ? (
+                            <span className="font-semibold text-on-surface">
+                              {sideLabel(a.operative_side, a.procedure_code)}
+                            </span>
+                          ) : (
+                            <span className="italic">side not recorded</span>
+                          )}
+                        </div>
+                        {a.phone_e164 && (
+                          <a
+                            href={`tel:${a.phone_e164}`}
+                            className="inline-flex items-center gap-1 mt-1 font-body-sm text-primary hover:underline"
+                            aria-label={`Call ${a.patient_name} on ${formatPhone(a.phone_e164)}`}
+                          >
+                            <span className="material-symbols-outlined text-[14px]" aria-hidden="true">call</span>
+                            {formatPhone(a.phone_e164)}
+                          </a>
+                        )}
                       </td>
                       <td className="py-3 px-space-md">
                         <div className="flex flex-col items-start gap-1">
@@ -167,16 +264,10 @@ export default function AlertsPage() {
                         </div>
                       </td>
                       <td className="py-3 px-space-md">
-                        <div className="flex flex-wrap gap-1.5 max-w-xs">
-                          {a.reasons.map((r, i) => (
-                            <span key={i} className="px-2 py-0.5 rounded bg-surface-bright border border-outline-variant/40 font-body-sm text-on-surface">
-                              {reasonText(r)}
-                            </span>
-                          ))}
-                        </div>
+                        <Reasons alert={a} />
                       </td>
                       <td className="py-3 px-space-md">
-                        <Acknowledgement alert={a} />
+                        <Acknowledgement alert={a} onDone={reload} />
                       </td>
                       <td className="py-3 px-space-md max-w-xs">
                         {a.outcome ? (

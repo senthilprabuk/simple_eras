@@ -4,7 +4,10 @@ ERAS Clinical Remote Monitoring - Demo Seed Script
 Populates:
   1. Hospital branding ("St. Mary's Orthopedic Center", Coimbatore)
   2. 3 Hospital Admin Accounts (Nurse, Surgeon, Superadmin)
-  3. Clinical evaluations & alerts across all 12 existing fixture patients:
+  3. Clinical evaluations & alerts across twelve of the fixture patients.
+     Reason names are the ruleset's own signal names, not free text: the
+     alerts screen groups them by the complication they point at, and an
+     invented name silently lands in "other".
      - 1 Emergency Alert (FX-03 Sudden Clot)
      - 2 Critical Alerts (FX-02 Slow Burn, FX-07 Combination Creep)
      - 2 Review Alerts (FX-08 Early Low Fever, FX-12 Mobility Drop)
@@ -114,7 +117,7 @@ async def seed_demo(session_factory=None):
             raised_at = now - timedelta(minutes=3)
             reasons = [
                 {"name": "calf_pain", "score": 3, "weight": 3, "detail": "Calf swelling & acute sharp pain"},
-                {"name": "pe_risk", "score": 3, "weight": 0, "detail": "Suspected DVT trigger"}
+                {"name": "breathless", "score": 3, "weight": 0, "detail": "Newly short of breath"}
             ]
             await session.execute(text("""
                 INSERT INTO txn.check_in_evaluation (
@@ -169,8 +172,8 @@ async def seed_demo(session_factory=None):
             alert_id = uuid4()
             raised_at = now - timedelta(minutes=2)
             reasons = [
-                {"name": "knee_extension", "score": 2, "weight": 2, "detail": "Persistent extension block >15°"},
-                {"name": "night_pain", "score": 2, "weight": 2, "detail": "Severe night pain flare"}
+                {"name": "knee_bend", "score": 2, "weight": 2, "detail": "Persistent extension block >15°"},
+                {"name": "pain", "score": 2, "weight": 2, "detail": "Severe night pain flare"}
             ]
             await session.execute(text("""
                 INSERT INTO txn.check_in_evaluation (
@@ -198,14 +201,17 @@ async def seed_demo(session_factory=None):
             raised_at = now - timedelta(minutes=42)
             ack_at = now - timedelta(minutes=25)
             reasons = [
-                {"name": "erythema", "score": 2, "weight": 2, "detail": "Mild peripatellar erythema spreading 1cm"}
+                # Was "erythema", a measure migration 002 removed from the
+                # parameter registry, so the engine can no longer produce it.
+                # FX-08 is the early-low-fever fixture, so its alert says so.
+                {"name": "temp_c", "score": 2, "weight": 3, "detail": "Temperature 38.1 °C on day 7"}
             ]
             await session.execute(text("""
                 INSERT INTO txn.check_in_evaluation (
                     evaluation_id, episode_id, ruleset_id, day_after_discharge,
                     tier, total_score, is_override, reasons, reason_key, evaluated_at
                 ) VALUES (
-                    :evid, :eid, :rid, 7, 'review', 6, false, CAST(:reasons AS jsonb), 'reason_erythema', :raised_at
+                    :evid, :eid, :rid, 7, 'review', 6, false, CAST(:reasons AS jsonb), 'reason_low_fever', :raised_at
                 );
             """), {"evid": eval_id, "eid": p["episode_id"], "rid": p["ruleset_id"], "reasons": json.dumps(reasons), "raised_at": raised_at})
 
@@ -213,10 +219,10 @@ async def seed_demo(session_factory=None):
                 INSERT INTO txn.alert (
                     alert_id, episode_id, evaluation_id, tier, reason_key, status, raised_at, notified_at, acknowledged_at, acknowledged_by
                 ) VALUES (
-                    :aid, :eid, :evid, 'review', 'reason_erythema', 'acknowledged', :raised_at, :raised_at, :ack_at, :ack_by
+                    :aid, :eid, :evid, 'review', 'reason_low_fever', 'acknowledged', :raised_at, :raised_at, :ack_at, :ack_by
                 );
             """), {"aid": alert_id, "eid": p["episode_id"], "evid": eval_id, "raised_at": raised_at, "ack_at": ack_at, "ack_by": admin_mehta_id})
-            print(f"  [+] [REVIEW]     {p['mrn']} ({p['patient_name']}): Erythema spreading 1cm (Ack by Dr. Mehta)")
+            print(f"  [+] [REVIEW]     {p['mrn']} ({p['patient_name']}): Temperature 38.1 on day 7 (Ack by Dr. Mehta)")
 
         # --- ROW 5: REVIEW (FX-12 Mobility Drop / A. Chen equivalent - Acknowledged) ---
         p = patient_map.get("FX-12")
@@ -226,14 +232,16 @@ async def seed_demo(session_factory=None):
             raised_at = now - timedelta(minutes=75)
             ack_at = now - timedelta(minutes=50)
             reasons = [
-                {"name": "fall_report", "score": 2, "weight": 2, "detail": "Reported fall without direct knee impact"}
+                # FX-12 is the mobility-drop fixture: its steps halve from a
+                # personal best at day 12, which is what the ruleset watches for.
+                {"name": "mobility_regression", "score": 2, "weight": 1, "detail": "400 steps, below half of this patient's best of 1200"}
             ]
             await session.execute(text("""
                 INSERT INTO txn.check_in_evaluation (
                     evaluation_id, episode_id, ruleset_id, day_after_discharge,
                     tier, total_score, is_override, reasons, reason_key, evaluated_at
                 ) VALUES (
-                    :evid, :eid, :rid, 21, 'review', 6, false, CAST(:reasons AS jsonb), 'reason_fall', :raised_at
+                    :evid, :eid, :rid, 21, 'review', 6, false, CAST(:reasons AS jsonb), 'reason_mobility_drop', :raised_at
                 );
             """), {"evid": eval_id, "eid": p["episode_id"], "rid": p["ruleset_id"], "reasons": json.dumps(reasons), "raised_at": raised_at})
 
@@ -241,10 +249,10 @@ async def seed_demo(session_factory=None):
                 INSERT INTO txn.alert (
                     alert_id, episode_id, evaluation_id, tier, reason_key, status, raised_at, notified_at, acknowledged_at, acknowledged_by
                 ) VALUES (
-                    :aid, :eid, :evid, 'review', 'reason_fall', 'acknowledged', :raised_at, :raised_at, :ack_at, :ack_by
+                    :aid, :eid, :evid, 'review', 'reason_mobility_drop', 'acknowledged', :raised_at, :raised_at, :ack_at, :ack_by
                 );
             """), {"aid": alert_id, "eid": p["episode_id"], "evid": eval_id, "raised_at": raised_at, "ack_at": ack_at, "ack_by": admin_sarah_id})
-            print(f"  [+] [REVIEW]     {p['mrn']} ({p['patient_name']}): Reported fall without knee impact (Ack by Nurse Sarah)")
+            print(f"  [+] [REVIEW]     {p['mrn']} ({p['patient_name']}): Steps halved from personal best (Ack by Nurse Sarah)")
 
         # --- ROW 6: MISSED (FX-06 Drop Out / B. Kowalski equivalent - Evaluated Today) ---
         p = patient_map.get("FX-06")
@@ -253,7 +261,7 @@ async def seed_demo(session_factory=None):
             alert_id = uuid4()
             raised_at = now - timedelta(hours=2)
             reasons = [
-                {"name": "missed_submission", "score": 2, "weight": 2, "detail": "No check-in for 2 expected cycles (WhatsApp inactive 18h)"}
+                {"name": "missed_check_in", "score": 2, "weight": 2, "detail": "No check-in for 2 expected cycles (WhatsApp inactive 18h)"}
             ]
             # check_in_id is NULL for synthetic missed check-in evaluation
             await session.execute(text("""

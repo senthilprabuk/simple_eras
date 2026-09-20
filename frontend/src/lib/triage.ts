@@ -50,6 +50,82 @@ export function reasonText(reason: Reason): string {
   return reason.detail || reason.name.replace(/_/g, " ");
 }
 
+/* ------------------------------------------- knee recovery domains */
+
+/**
+ * The recovery complication a signal points at.
+ *
+ * An alert arrives as a list of parameter findings, and reading "calf pain,
+ * wound leaking, chills, temperature 38.4" takes a moment to add up to a
+ * picture. Grouping them says what the picture is before the detail is read.
+ *
+ * `other` is deliberate rather than a fallback for signals nobody classified.
+ * A raised pulse is a sign of both sepsis and a clot, and pain is a sign of
+ * almost everything; filing either under one heading would claim more than the
+ * reading supports, so they keep their own chips and no domain.
+ */
+export type KneeDomain = "dvt" | "infection" | "mobility" | "missed" | "other";
+
+/**
+ * Which domain each signal belongs to. One signal, one domain — a finding that
+ * appeared under two headings would be counted twice by the eye it is meant to
+ * help. Signal names come from the ruleset, so a new measure lands in `other`
+ * until it is classified here, which is the safe direction to fail.
+ */
+export const DOMAIN_OF_SIGNAL: Record<string, KneeDomain> = {
+  calf_pain: "dvt",
+  breathless: "dvt",
+  spo2: "dvt",
+
+  temp_c: "infection",
+  fever_returned: "infection",
+  slow_burn: "infection",
+  drainage: "infection",
+  chills: "infection",
+
+  weight_bear: "mobility",
+  knee_bend: "mobility",
+  walk_aid: "mobility",
+  steps: "mobility",
+  mobility_regression: "mobility",
+
+  missed_check_in: "missed",
+};
+
+export const DOMAIN_META: Record<KneeDomain, { label: string; icon: string }> = {
+  dvt: { label: "DVT / clot risk", icon: "bloodtype" },
+  infection: { label: "Wound / infection risk", icon: "healing" },
+  mobility: { label: "Knee mobility deficit", icon: "accessibility_new" },
+  missed: { label: "Missed check-in", icon: "schedule" },
+  other: { label: "Other findings", icon: "more_horiz" },
+};
+
+/** Domains in the order a clinician should meet them: most time-critical first. */
+export const DOMAIN_ORDER: KneeDomain[] = ["dvt", "infection", "mobility", "missed", "other"];
+
+export function domainOf(reason: Reason): KneeDomain {
+  return DOMAIN_OF_SIGNAL[reason.name] ?? "other";
+}
+
+/**
+ * The alert's reasons grouped by domain, in DOMAIN_ORDER, skipping any domain
+ * with nothing in it. Reason order inside a group is left as the API sent it,
+ * which is already worst-first.
+ */
+export function groupReasons(reasons: Reason[]): { domain: KneeDomain; reasons: Reason[] }[] {
+  const grouped = new Map<KneeDomain, Reason[]>();
+  for (const reason of reasons) {
+    const domain = domainOf(reason);
+    const existing = grouped.get(domain);
+    if (existing) existing.push(reason);
+    else grouped.set(domain, [reason]);
+  }
+  return DOMAIN_ORDER.filter((d) => grouped.has(d)).map((domain) => ({
+    domain,
+    reasons: grouped.get(domain)!,
+  }));
+}
+
 export function tierCounts(rows: Pick<QueueRow, "tier">[]): Record<Tier, number> {
   const counts: Record<Tier, number> = { emergency: 0, critical: 0, review: 0, missed: 0 };
   for (const row of rows) counts[row.tier] += 1;

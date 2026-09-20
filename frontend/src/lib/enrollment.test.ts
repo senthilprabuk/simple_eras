@@ -42,6 +42,7 @@ function valid(overrides: Partial<EnrollmentDraft> = {}): EnrollmentDraft {
     address_district: "Coimbatore",
     address_postal_code: "641018",
     contacts: [{ name: "Arun Narayanan", relationship: "son", phone_e164: "+919812345678" }],
+    operative_side: "right",
     surgery_date: "2026-09-15",
     discharge_date: "2026-09-17",
     consent_confirmed: true,
@@ -58,6 +59,15 @@ describe("validateEnrollment", () => {
     expect(draft.procedure_code).toBe("TKR");
     expect(draft.checkin_window).toBe("morning");
     expect(draft.contacts).toHaveLength(1);
+    // Deliberately not defaulted: which knee it is cannot be guessed, and a
+    // pre-selected side is one a hurried clinician would accept unread.
+    expect(draft.operative_side).toBe("");
+  });
+
+  it("will not enroll a knee replacement without saying which knee", () => {
+    expect(validateEnrollment(valid({ operative_side: "" }), OPTIONS)).toEqual({
+      operative_side: "Choose which knee was replaced.",
+    });
   });
 
   it("passes a complete draft", () => {

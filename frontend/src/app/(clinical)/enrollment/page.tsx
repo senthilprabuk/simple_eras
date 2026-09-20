@@ -383,6 +383,26 @@ function EnrollmentForm({
               </select>
             )}
           </Field>
+          <Field
+            label="Operative side"
+            hint="Shown beside every alert, so calf symptoms can be read against the right leg"
+            fieldKey="operative_side"
+            errors={errors}
+          >
+            {(c) => (
+              <select
+                {...c}
+                className={inputClass}
+                value={draft.operative_side}
+                onChange={(e) => set("operative_side", e.target.value as EnrollmentDraft["operative_side"])}
+              >
+                <option value="">Choose…</option>
+                <option value="left">Left knee</option>
+                <option value="right">Right knee</option>
+                <option value="bilateral">Both knees</option>
+              </select>
+            )}
+          </Field>
           <Field label="Surgery date" fieldKey="surgery_date" errors={errors}>
             {(c) => <input {...c} className={inputClass} type="date" max={options.today} value={draft.surgery_date} onChange={(e) => set("surgery_date", e.target.value)} />}
           </Field>

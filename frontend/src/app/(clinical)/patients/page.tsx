@@ -4,8 +4,8 @@ import React, { useCallback, useState } from "react";
 import Link from "next/link";
 import { TierBadge } from "@/components/RiskQueueTable";
 import { ErrorBanner, Loading, PageBody, PageHeader, SearchInput, Segmented, StatusPill, primaryButtonClass } from "@/components/ui";
-import { fetchPatients, type EpisodeStatus } from "@/lib/clinicalApi";
-import { LANGUAGE_NAMES, formatDate, formatDateTime } from "@/lib/format";
+import { CHECK_IN_TODAY, fetchPatients, sideLabel, type EpisodeStatus } from "@/lib/clinicalApi";
+import { LANGUAGE_NAMES, formatDate, formatDateTime, formatPhone } from "@/lib/format";
 import { useApiData, useDebounced } from "@/lib/useApiData";
 
 type Sort = "priority" | "recent" | "name";
@@ -103,10 +103,20 @@ export default function PatientsPage() {
                           <div className="font-body-sm text-on-surface-variant">
                             MRN {p.mrn ?? "not recorded"} · {LANGUAGE_NAMES[p.language_code] ?? p.language_code}
                           </div>
+                          {p.phone_e164 && (
+                            <a
+                              href={`tel:${p.phone_e164}`}
+                              className="inline-flex items-center gap-1 font-body-sm text-primary hover:underline"
+                              aria-label={`Call ${p.patient_name} on ${formatPhone(p.phone_e164)}`}
+                            >
+                              <span className="material-symbols-outlined text-[14px]" aria-hidden="true">call</span>
+                              {formatPhone(p.phone_e164)}
+                            </a>
+                          )}
                         </td>
                         <td className="py-3 px-space-md">
                           <div className="font-body-md text-on-surface">
-                            POD {p.post_op_day} · {p.procedure_code}
+                            POD {p.post_op_day} · {sideLabel(p.operative_side, p.procedure_code)}
                           </div>
                           <div className="flex items-center gap-1.5 font-body-sm text-on-surface-variant">
                             {p.status !== "active" && <StatusPill status={p.status} />}
@@ -114,14 +124,19 @@ export default function PatientsPage() {
                           </div>
                         </td>
                         <td className="py-3 px-space-md font-body-md text-on-surface">
-                          {p.last_check_in_at ? (
+                          {p.last_check_in_at && (
                             <>
                               POD {p.last_check_in_day}
                               <div className="font-body-sm text-on-surface-variant">{formatDateTime(p.last_check_in_at)}</div>
                             </>
-                          ) : (
-                            <span className="text-outline italic">None yet</span>
                           )}
+                          <span
+                            className={`inline-block mt-1 px-2 py-0.5 rounded-full font-label-sm ${
+                              CHECK_IN_TODAY[p.check_in_today].className
+                            }`}
+                          >
+                            {CHECK_IN_TODAY[p.check_in_today].label}
+                          </span>
                         </td>
                         <td className="py-3 px-space-md">
                           <div className={`font-body-md ${low ? "text-tertiary font-semibold" : "text-on-surface"}`}>

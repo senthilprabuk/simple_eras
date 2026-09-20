@@ -6,6 +6,7 @@ import type {
   EnrollmentRequest,
   Gender,
   Language,
+  OperativeSide,
   Relationship,
 } from "@/lib/clinicalApi";
 
@@ -36,6 +37,9 @@ export interface EnrollmentDraft {
   email: string;
   contacts: ContactDraft[];
   procedure_code: string;
+  // No default: which knee it is cannot be guessed, and an unset select is
+  // what makes the clinician answer rather than accept whatever was first.
+  operative_side: OperativeSide | "";
   surgery_date: string;
   discharge_date: string;
   checkin_window: CheckInWindowCode;
@@ -65,6 +69,7 @@ export function emptyDraft(options: EnrollmentOptions): EnrollmentDraft {
     email: "",
     contacts: [emptyContact()],
     procedure_code: options.procedures[0]?.procedure_code ?? "",
+    operative_side: "",
     surgery_date: "",
     discharge_date: options.today,
     checkin_window: options.checkin_windows[0]?.code ?? "morning",
@@ -133,6 +138,7 @@ export function validateEnrollment(draft: EnrollmentDraft, options: EnrollmentOp
   });
 
   if (!draft.procedure_code) errors.procedure_code = "Choose the procedure.";
+  if (!draft.operative_side) errors.operative_side = "Choose which knee was replaced.";
   if (!draft.surgery_date) errors.surgery_date = "Enter the surgery date.";
   if (!draft.discharge_date) errors.discharge_date = "Enter the discharge date.";
   if (draft.surgery_date && draft.discharge_date && draft.discharge_date < draft.surgery_date) {
@@ -166,7 +172,7 @@ export function validateEnrollment(draft: EnrollmentDraft, options: EnrollmentOp
 const FIELD_ORDER = [
   "patient_name", "mrn", "gender", "date_of_birth", "phone_e164", "alt_phone_e164", "email",
   "address_line", "address_district", "address_postal_code", "contacts",
-  "procedure_code", "surgery_date", "discharge_date", "baseline",
+  "procedure_code", "operative_side", "surgery_date", "discharge_date", "baseline",
   "consent_version", "consent_confirmed", "data_processing_consent", "contact_sharing_consent",
 ];
 
@@ -182,6 +188,7 @@ const FIELD_LABELS: Record<string, string> = {
   address_district: "District",
   address_postal_code: "PIN code",
   procedure_code: "Procedure",
+  operative_side: "Operative side",
   surgery_date: "Surgery date",
   discharge_date: "Discharge date",
   consent_version: "Consent form version",
@@ -251,6 +258,7 @@ export function toEnrollmentRequest(draft: EnrollmentDraft, options: EnrollmentO
       phone_e164: normalisePhone(c.phone_e164),
     })),
     procedure_code: draft.procedure_code,
+    operative_side: draft.operative_side as OperativeSide,
     surgery_date: draft.surgery_date,
     discharge_date: draft.discharge_date,
     checkin_window: draft.checkin_window,

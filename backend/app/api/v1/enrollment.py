@@ -206,15 +206,17 @@ async def enroll_patient(
         monitoring_ends_on = req.discharge_date + timedelta(days=procedure["observation_days"])
         episode_id = (await db.execute(text("""
             INSERT INTO txn.patient_episode
-                (patient_id, hospital_id, procedure_id, ruleset_id, surgery_date, discharge_date,
+                (patient_id, hospital_id, procedure_id, ruleset_id, operative_side,
+                 surgery_date, discharge_date,
                  monitoring_ends_on, consent_version, consent_at, enrolled_by, status,
                  checkin_window_start, checkin_window_end)
-            VALUES (:patient_id, :h_id, :procedure_id, :ruleset_id, :surgery, :discharge,
+            VALUES (:patient_id, :h_id, :procedure_id, :ruleset_id, :side, :surgery, :discharge,
                     :ends, :consent, now(), :admin_id, 'active', :window_start, :window_end)
             RETURNING episode_id
         """), {
             "patient_id": patient_id, "h_id": h_id, "procedure_id": procedure["procedure_id"],
-            "ruleset_id": procedure["ruleset_id"], "surgery": req.surgery_date, "discharge": req.discharge_date,
+            "ruleset_id": procedure["ruleset_id"], "side": req.operative_side,
+            "surgery": req.surgery_date, "discharge": req.discharge_date,
             "ends": monitoring_ends_on, "consent": req.consent_version, "admin_id": current_admin.admin_user_id,
             "window_start": window.start, "window_end": window.end,
         })).scalar_one()
