@@ -19,7 +19,7 @@ async def _timeline(client, headers, episode_id):
 
 async def test_list_shows_active_patients_most_urgent_first(client, nurse_headers):
     data = (await client.get("/api/v1/patients", headers=nurse_headers)).json()
-    assert data["total"] == 12
+    assert data["total"] == 14
     assert data["items"][0]["top_open_tier"] == "emergency"
     assert {i["status"] for i in data["items"]} == {"active"}
 

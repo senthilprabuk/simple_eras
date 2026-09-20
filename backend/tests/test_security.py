@@ -26,7 +26,7 @@ async def test_queries_without_a_hospital_filter_still_see_one_hospital(db, seco
         "SELECT count(*) FROM txn.alert a JOIN txn.patient_episode e USING (episode_id) WHERE e.hospital_id = 1",
     ) == 0
     assert await _scalar_as(1, "SELECT count(*) FROM txn.alert WHERE alert_id = :a", a=h2_alert) == 0
-    assert await _scalar_as(1, "SELECT count(*) FROM txn.patient") == 12
+    assert await _scalar_as(1, "SELECT count(*) FROM txn.patient") == 14
 
 
 async def test_tenant_role_without_a_hospital_sees_nothing():

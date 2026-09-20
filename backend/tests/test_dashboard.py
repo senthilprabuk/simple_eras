@@ -53,7 +53,7 @@ async def test_queue_multi_tenant_isolation(client: httpx.AsyncClient, h2_header
 
 async def test_kpis_census(client: httpx.AsyncClient, nurse_headers: Dict[str, str]):
     data = (await client.get("/api/v1/dashboard/kpis", headers=nurse_headers)).json()
-    assert data["active_patients"] == 12
+    assert data["active_patients"] == 14
     assert data["ack_window_secs"] == 900
     assert data["window_days"] == 7
     assert data["unresolved_alerts"] >= data["unacknowledged_alerts"] >= 1

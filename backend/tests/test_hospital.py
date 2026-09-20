@@ -9,7 +9,7 @@ async def test_profile_shows_settings_procedures_and_activity(client, nurse_head
     assert profile["timezone"] == "Asia/Kolkata"
     assert profile["ack_window_secs"] == 900
     assert [p["procedure_code"] for p in profile["procedures"]] == ["TKR"]
-    assert profile["stats"]["active_patients"] == 12
+    assert profile["stats"]["active_patients"] == 14
     assert profile["stats"]["active_clinicians"] >= 3
 
 

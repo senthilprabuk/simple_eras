@@ -66,7 +66,9 @@ order by day;
 
 
 -- ---------------------------------------------------------------------
--- 4. Load summary. Expect 12 rows, 237 check-ins in total.
+-- 4. Load summary. Expect 14 rows, 281 check-ins in total.
+--    f15 is the one row where values_recorded is far below the others:
+--    two answers a day rather than ten.
 -- ---------------------------------------------------------------------
 select x.fixture,
        count(distinct ci.check_in_id)                           as check_ins,

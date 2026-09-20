@@ -18,7 +18,7 @@
 --  evaluations and alerts. Re-run backend/seed/seed_demo.py afterwards
 --  if you need the demo alerts back.
 --
---  12 patients, 237 check-ins. Fixture codes are stable identifiers, so
+--  14 patients, 281 check-ins. Fixture codes are stable identifiers, so
 --  the retired f10 leaves a gap in the FX- numbering rather than
 --  renumbering the fixtures after it.
 --  Verify the load with db/seed/verify_fixtures.sql.
@@ -72,6 +72,17 @@ create temporary table fx_discrete (
 
 create temporary table fx_gap (fixture text, day int) on commit drop;
 
+-- Questions a fixture deliberately leaves blank while still submitting the
+-- check-in. Only the boolean insert needs this: it fills every symptom across
+-- the collect window, so silence has to be asked for. A numeric is left blank
+-- simply by having no curve.
+create temporary table fx_unanswered (
+    fixture        text,
+    parameter_code text,
+    day_from       int,
+    day_to         int
+) on commit drop;
+
 -- "today" for the fixture hospital, in its own timezone
 create temporary table fx_clock on commit drop as
 select (now() at time zone h.timezone)::date as today, h.timezone
@@ -82,13 +93,14 @@ where h.hospital_code = 'CBE-01';
 create temporary table fx_source (fixture text, day int, source text) on commit drop;
 
 create temporary table fx_expect (
-    fixture           text primary key,
-    escalate_from     int,
-    escalate_to       int,
-    expect_tier       text,
-    must_not_escalate boolean default false,
-    expect_reasons    text[],
-    note              text
+    fixture               text primary key,
+    escalate_from         int,
+    escalate_to           int,
+    expect_tier           text,
+    must_not_escalate     boolean default false,
+    expect_reasons        text[],
+    expect_low_confidence boolean default false,
+    note                  text
 ) on commit drop;
 
 
@@ -108,7 +120,9 @@ insert into fx_patient (fixture, display_name, last_day, base_hr, purpose) value
  ('f09_collect_score', 'Deepa Iyer [Collect Not Score]',      21, 72, 'Drainage from day 2: collected, scored from 5.'),
  ('f11_one_day_spike', 'Harish Patel [One Day Spike]',        21, 72, 'Hysteresis must hold the tier.'),
  ('f12_mobility_drop', 'Sunita Sharma [Mobility Drop]',       21, 72, 'Steps halve from personal best, day 12.'),
- ('f13_out_of_window', 'Ganesh Moorthy [Out Of Window]',      21, 72, 'Nurse enters knee_bend on day 5, outside collect.');
+ ('f13_out_of_window', 'Ganesh Moorthy [Out Of Window]',      21, 72, 'Nurse enters knee_bend on day 5, outside collect.'),
+ ('f14_slow_creep',    'Bhuvana Rajan [Smouldering Knee]',    21, 72, 'Creep under every band edge. Only slow_burn escalates.'),
+ ('f15_partial',       'Nandini Raghavan [Partial Reporter]', 21, 72, 'Answers two questions a day. Low confidence.');
 
 -- ---- who they are, where they live, and the first person to call
 create temporary table fx_person (
@@ -132,7 +146,9 @@ insert into fx_person values
  ('f09_collect_score', 'female', '9 Thadagam Road',                '641025', 'Karthika Iyer',    'daughter'),
  ('f11_one_day_spike', 'male',   '3 Nanjundapuram Road',           '641036', 'Nisha Patel',      'daughter'),
  ('f12_mobility_drop', 'female', '27 Kalapatti Road',              '641048', 'Amit Sharma',      'son'),
- ('f13_out_of_window', 'male',   '11 Vadavalli Main Road',         '641041', 'Selvi Ganesh',     'spouse');
+ ('f13_out_of_window', 'male',   '11 Vadavalli Main Road',         '641041', 'Selvi Ganesh',     'spouse'),
+ ('f14_slow_creep',    'female', '19 Marudhamalai Road',           '641046', 'Prakash Rajan',    'spouse'),
+ ('f15_partial',       'female', '6 Tatabad, Gandhipuram',         '641012', 'Vidya Raghavan',   'daughter');
 
 -- ---- numeric curves (spo2 runs to day 21, inside its collect window of 0-42)
 insert into fx_curve (fixture, parameter_code, day_from, day_to, start_val, end_val, noise) values
@@ -216,7 +232,42 @@ insert into fx_curve (fixture, parameter_code, day_from, day_to, start_val, end_
  ('f13_out_of_window','hr',     0,21, 84,   74,   3.0),
  ('f13_out_of_window','spo2',   0,21, 96,   98,   0.8),
  ('f13_out_of_window','pain',   0,21, 6,    3,    0.5),
- ('f13_out_of_window','steps',  0,21, 80,   1100, 60);
+ ('f13_out_of_window','steps',  0,21, 80,   1100, 60),
+
+ -- f14: the creep the slow_burn detector was written for. Every reading stays
+ -- under 37.5, so the temperature bands score nothing on any single day, and
+ -- the only thing that can escalate this patient is monotonic_rise.
+ --
+ -- Three numbers are load-bearing and none of them is arbitrary:
+ --   * 0.2 C a day across days 9-15. monotonic_rise sums the steps from day-5
+ --     to today and needs 0.8; 0.2 x 5 = 1.0 clears it with room, where the
+ --     0.16 a day the threshold strictly requires would land on the boundary
+ --     and turn a float comparison into a coin toss.
+ --   * The settle ends at 36.4 and the creep starts at 36.2. That one step
+ --     backwards is deliberate: it makes day 13's window non-monotonic, so the
+ --     detector cannot fire a day early off the flat spell before it.
+ --   * Noise is zero on the settle and the creep. A tenth of a degree either
+ --     way would round one step backwards and silence the detector entirely
+ --     (any(step < 0) returns None), which is the same edge f08 met at 38.0.
+ -- Firing on days 14 and 15 back to back is also the point: a non-override
+ -- trend has to hold across two submissions, so a one-day creep proves nothing.
+ ('f14_slow_creep','temp_c', 0, 3, 37.2, 36.9, 0.06),
+ ('f14_slow_creep','temp_c', 4, 8, 36.8, 36.4, 0.0),
+ ('f14_slow_creep','temp_c', 9,15, 36.2, 37.4, 0.0),
+ ('f14_slow_creep','temp_c',16,21, 37.4, 37.4, 0.0),
+ ('f14_slow_creep','hr',     0,21, 86,   72,   3.0),
+ ('f14_slow_creep','spo2',   0,21, 96,   98,   0.8),
+ -- Mild pain that never improves. Two points on its own, well short of the
+ -- review cut-off of five, so the fixture still fails if slow_burn goes quiet.
+ ('f14_slow_creep','pain',   0,10, 6,    4,    0.3),
+ ('f14_slow_creep','pain',  11,21, 4,    4,    0.3),
+ ('f14_slow_creep','steps',  0,21, 80,   1200, 60),
+
+ -- f15: submits every day and answers two questions. Both are unremarkable, so
+ -- nothing scores; the fixture is about what the silence on the other ten means.
+ ('f15_partial','temp_c', 0,21, 37.2, 36.8, 0.10),
+ ('f15_partial','pain',   0,10, 6,    3,    0.4),
+ ('f15_partial','pain',  11,21, 3,    1,    0.3);
 
 -- ---- boolean and ordinal overrides
 insert into fx_discrete (fixture, parameter_code, day_from, day_to, value_bool, value_code) values
@@ -236,7 +287,31 @@ insert into fx_discrete (fixture, parameter_code, day_from, day_to, value_bool, 
  -- value is outside the collect window entirely. Store it, never score it.
  ('f13_out_of_window','knee_bend', 5, 5, null, 'chair'),
  ('f13_out_of_window','knee_bend',14,21, null, 'car'),
- ('f13_out_of_window','walk_aid', 14,21, null, 'cane');
+ ('f13_out_of_window','walk_aid', 14,21, null, 'cane'),
+ -- f14 keeps up with both milestones, so the only thing this patient has
+ -- wrong with them is a temperature nothing scores.
+ ('f14_slow_creep','knee_bend',14,16, null, 'chair'),
+ ('f14_slow_creep','knee_bend',17,21, null, 'car'),
+ ('f14_slow_creep','walk_aid', 14,17, null, 'crutch'),
+ ('f14_slow_creep','walk_aid', 18,21, null, 'cane');
+
+
+-- ---- questions left blank on a day that was otherwise submitted
+--
+-- f15 answers temperature and pain and nothing else. The numeric measures are
+-- absent because the fixture declares no curve for them; the symptom checks
+-- have to be named here, because the boolean insert below answers "no" to
+-- every one of them by default on every submitted day.
+--
+-- The distinction is the whole fixture. "No" is an answer the engine scores;
+-- a blank is not evidence of anything, and coverage is what says so. Two
+-- answers out of the ten questions asked before day 14, and out of the twelve
+-- asked once the milestones begin, is 0.20 falling to 0.17 — far below the 0.6
+-- line, so every day is flagged low confidence while the tier stays normal.
+insert into fx_unanswered (fixture, parameter_code, day_from, day_to) values
+ ('f15_partial','breathless',  0,21), ('f15_partial','calf_pain', 0,21),
+ ('f15_partial','drainage',    0,21), ('f15_partial','chills',    0,21),
+ ('f15_partial','weight_bear', 0,21);
 
 insert into fx_gap (fixture, day) values
  ('f05_erratic',2),('f05_erratic',3),('f05_erratic',6),('f05_erratic',9),('f05_erratic',10),
@@ -272,7 +347,20 @@ insert into fx_expect
  ('f12_mobility_drop', null,null,'review',    true,  array['mobility_regression'],
   'Personal best 1200 halves to 400 at day 12.'),
  ('f13_out_of_window', null,null,'normal',    true,  null,
-  'knee_bend on day 5 is stored but must produce no signal.');
+  'knee_bend on day 5 is stored but must produce no signal.'),
+ ('f14_slow_creep',      14,  17,'review',   false, array['slow_burn'],
+  'Temperature never reaches 37.5, so no band scores on any day. Mild pain is '
+  || 'worth two points and the cut-off is five, so monotonic_rise is the only '
+  || 'thing that can escalate this patient. Hysteresis holds day 14, which is '
+  || 'why the window opens there and closes at 17.'),
+ ('f15_partial',       null,null,'normal',    true,  null,
+  'Answers temperature and pain, leaves the five symptom checks blank. The '
+  || 'blanks must read as unknown rather than as "no": the tier stays normal '
+  || 'and coverage carries the doubt.');
+
+-- Only f15 is about coverage. Stated as an update rather than a column on the
+-- insert above so that adding it did not require touching twelve settled rows.
+update fx_expect set expect_low_confidence = true where fixture = 'f15_partial';
 
 
 -- ---------------------------------------------------------------------
@@ -320,7 +408,16 @@ from fx_patient f
 cross join fx_clock c
 cross join (select hospital_id from meta.hospital where hospital_code = 'CBE-01') h
 cross join (select procedure_id from meta.surgical_procedure where procedure_code = 'TKR') sp
-cross join (select ruleset_id from meta.ruleset where version = '1.0.0') r;
+-- Whichever version is approved, rather than a literal one. A ruleset is
+-- immutable once published, so new signals arrive as a new approved version;
+-- naming 1.0.0 here would quietly move every fixture back onto a retired
+-- ruleset the next time this file is run, and the fixtures that depend on
+-- trend signals would stop escalating with nothing to show why. The unique
+-- index on (procedure_id) where status = 'approved' makes this single-valued.
+cross join (select r.ruleset_id
+              from meta.ruleset r
+              join meta.surgical_procedure s on s.procedure_id = r.procedure_id
+             where s.procedure_code = 'TKR' and r.status = 'approved') r;
 
 insert into txn.episode_baseline (episode_id, parameter_id, value_num, value_bool, value_code)
 select md5(f.fixture || ':ep')::uuid, p.parameter_id, v.num, null, v.code
@@ -424,6 +521,13 @@ left join fx_discrete d on d.fixture = f.fixture
                        and d.parameter_code = p.parameter_code
                        and ci.day_after_discharge between d.day_from and d.day_to
 where ci.day_after_discharge between pp.collect_from_day and pp.collect_to_day
+  -- A question the fixture leaves blank gets no row at all, which is what
+  -- makes it unanswered rather than answered "no".
+  and not exists (
+      select 1 from fx_unanswered u
+       where u.fixture = f.fixture
+         and u.parameter_code = p.parameter_code
+         and ci.day_after_discharge between u.day_from and u.day_to)
 group by ci.check_in_id, p.parameter_id
 on conflict (check_in_id, parameter_id) do nothing;
 
@@ -448,23 +552,29 @@ on conflict (check_in_id, parameter_id) do nothing;
 -- 9. Expectations, readable by the Python harness
 -- ---------------------------------------------------------------------
 create table if not exists txn.fixture_expectation (
-    fixture           text     primary key,
-    episode_id        uuid     not null,
-    escalate_from     smallint,
-    escalate_to       smallint,
-    expect_tier       text     not null,
-    must_not_escalate boolean  not null default false,
-    expect_reasons    text[],
-    note              text
+    fixture               text     primary key,
+    episode_id            uuid     not null,
+    escalate_from         smallint,
+    escalate_to           smallint,
+    expect_tier           text     not null,
+    must_not_escalate     boolean  not null default false,
+    expect_reasons        text[],
+    expect_low_confidence boolean  not null default false,
+    note                  text
 );
 
 alter table txn.fixture_expectation add column if not exists expect_reasons text[];
+alter table txn.fixture_expectation
+    add column if not exists expect_low_confidence boolean not null default false;
 
 delete from txn.fixture_expectation;
 
 insert into txn.fixture_expectation
+    (fixture, episode_id, escalate_from, escalate_to, expect_tier,
+     must_not_escalate, expect_reasons, expect_low_confidence, note)
 select x.fixture, md5(x.fixture || ':ep')::uuid, x.escalate_from, x.escalate_to,
-       x.expect_tier, x.must_not_escalate, x.expect_reasons, x.note
+       x.expect_tier, x.must_not_escalate, x.expect_reasons,
+       x.expect_low_confidence, x.note
 from fx_expect x;
 
 commit;

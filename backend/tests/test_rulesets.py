@@ -8,8 +8,8 @@ async def test_lists_the_approved_ruleset_for_offered_procedures(client, nurse_h
     tkr = rulesets[0]
     assert (tkr["procedure_code"], tkr["version"], tkr["status"]) == ("TKR", "1.0.0", "approved")
     assert (tkr["review_at"], tkr["critical_at"]) == (5, 12)
-    assert tkr["parameter_count"] == 12
-    assert tkr["episodes_using"] == 12
+    assert tkr["parameter_count"] == 12   # measures in the ruleset
+    assert tkr["episodes_using"] == 14    # fixture patients enrolled on it
 
 
 async def test_detail_explains_every_parameter_and_its_windows(client, nurse_headers):

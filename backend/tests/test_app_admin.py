@@ -108,7 +108,7 @@ async def test_platform_role_has_no_access_to_patient_data(db):
 async def test_hospital_list_counts_patients_without_reading_them(client, admin_headers):
     hospitals = (await client.get("/api/v1/app-admin/hospitals", headers=admin_headers)).json()
     stmarys = next(h for h in hospitals if h["hospital_code"] == "CBE-01")
-    assert (stmarys["active_patients"], stmarys["procedure_codes"], stmarys["privacy_law"]) == (12, ["TKR"], "DPDP-2023")
+    assert (stmarys["active_patients"], stmarys["procedure_codes"], stmarys["privacy_law"]) == (14, ["TKR"], "DPDP-2023")
     assert stmarys["account_count"] >= 1
 
 
