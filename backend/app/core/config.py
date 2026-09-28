@@ -41,16 +41,21 @@ class Settings(BaseSettings):
     # "log" writes each one to the application log and marks it sent.
     NOTIFICATION_PROVIDER: Literal["disabled", "log"] = "disabled"
 
-    # WhatsApp Cloud API & Magic Link Configuration
-    # "log" prints messages to application log with mock IDs (safe for local development)
-    # "meta" dispatches through Meta Graph API
-    WHATSAPP_PROVIDER: Literal["disabled", "log", "meta"] = "log"
+    # Patient WhatsApp messages. "disabled" leaves them queued and logs a warning;
+    # "log" writes a line per message (no patient details) and marks it sent;
+    # "meta" sends approved templates through the Graph API.
+    WHATSAPP_PROVIDER: Literal["disabled", "log", "meta"] = "disabled"
+    # The platform's own number, used for a hospital that has not connected one
     META_PHONE_NUMBER_ID: Optional[str] = None
     META_ACCESS_TOKEN: Optional[str] = None
-    META_WEBHOOK_VERIFY_TOKEN: Optional[str] = "eras_webhook_verify_token"
+    # Accepted in the webhook handshake besides each hospital's own verify token
+    META_WEBHOOK_VERIFY_TOKEN: Optional[str] = None
+    # Signs webhook calls. Without it every webhook POST is refused.
     META_APP_SECRET: Optional[str] = None
     META_API_VERSION: str = "v21.0"
+    # Where patients open their check-in link, and where Meta reaches the webhook
     FRONTEND_BASE_URL: str = "http://localhost:3000"
+    PUBLIC_API_BASE_URL: str = "http://localhost:8000"
     DAILY_DISPATCH_INTERVAL_SECS: int = 60
 
     LOG_LEVEL: str = "INFO"

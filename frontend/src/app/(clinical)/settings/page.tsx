@@ -26,7 +26,6 @@ import {
   sendTestWhatsAppMessage,
   type Clinician,
   type Role,
-  type WhatsAppAccount,
 } from "@/lib/clinicalApi";
 import { formatDate } from "@/lib/format";
 import { useApiData } from "@/lib/useApiData";
@@ -272,9 +271,14 @@ export default function SettingsPage() {
   );
 }
 
+// A secret shared with Meta for the webhook handshake: random, so no two hospitals share one.
+function newVerifyToken(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 function WhatsAppAccountSection() {
   const session = useSession();
-  const canManage = session.role === "superadmin" || session.role === "admin";
+  const canManage = session.role === "superadmin";
   const { data: account, error, reload } = useApiData(fetchWhatsAppAccount);
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({
@@ -283,7 +287,7 @@ function WhatsAppAccountSection() {
     phoneNumberId: "",
     wabaId: "",
     accessToken: "",
-    verifyToken: "eras_stmarys_verify_2026",
+    verifyToken: "",
     metaAppId: "",
   });
   const [saving, setSaving] = useState(false);
@@ -304,17 +308,17 @@ function WhatsAppAccountSection() {
         phoneNumberId: account.phone_number_id,
         wabaId: account.waba_id,
         accessToken: "",
-        verifyToken: account.verify_token,
+        verifyToken: account.verify_token ?? "",
         metaAppId: account.meta_app_id ?? "",
       });
     } else {
       setForm({
-        displayPhoneNumber: "+91 98765 43210",
-        displayName: "St. Mary's Orthopedic Helpline",
+        displayPhoneNumber: "",
+        displayName: "",
         phoneNumberId: "",
         wabaId: "",
         accessToken: "",
-        verifyToken: "eras_stmarys_verify_2026",
+        verifyToken: newVerifyToken(),
         metaAppId: "",
       });
     }
@@ -350,7 +354,7 @@ function WhatsAppAccountSection() {
   };
 
   const handleDisconnect = async () => {
-    if (!confirm("Are you sure you want to disconnect this WhatsApp number? Automated reminders will be paused.")) return;
+    if (!confirm("Disconnect this WhatsApp number? Patients will no longer receive messages from it.")) return;
     try {
       await disconnectWhatsAppAccount();
       reload();
@@ -375,7 +379,7 @@ function WhatsAppAccountSection() {
       const res = await sendTestWhatsAppMessage(testPhone.trim());
       setTestStatus({
         ok: res.status === "sent",
-        message: res.status === "sent" ? "Test message dispatched successfully!" : (res.error || "Queued"),
+        message: res.status === "sent" ? "Test message sent." : res.error || "The test message was not sent.",
       });
     } catch (err) {
       setTestStatus({
@@ -436,6 +440,12 @@ function WhatsAppAccountSection() {
               <dd className="font-mono text-on-surface">{account.waba_id}</dd>
               <dt className="font-semibold">Access Token:</dt>
               <dd className="font-mono text-on-surface">{account.access_token_masked}</dd>
+              {account.verify_token && (
+                <>
+                  <dt className="font-semibold">Webhook Verify Token:</dt>
+                  <dd className="font-mono text-on-surface break-all">{account.verify_token}</dd>
+                </>
+              )}
             </dl>
 
             {/* Meta Webhook URL helper */}
@@ -485,12 +495,13 @@ function WhatsAppAccountSection() {
               <form onSubmit={handleSendTest} className="mt-space-md p-space-md rounded-xl bg-surface-container-lowest border border-outline-variant/40 flex flex-col gap-space-sm">
                 <h4 className="font-title-sm font-semibold text-on-surface">Send Test WhatsApp Message</h4>
                 <p className="font-body-sm text-on-surface-variant">
-                  Verify message dispatch from this hospital number directly to any patient or doctor phone.
+                  WhatsApp delivers a free-text message only to someone who has written to this number in the
+                  last 24 hours. Scan the QR code and send a message from the phone first.
                 </p>
                 <div className="flex gap-space-sm">
                   <input
                     type="tel"
-                    placeholder="+91 98765 43210"
+                    placeholder="+91 …"
                     value={testPhone}
                     onChange={(e) => setTestPhone(e.target.value)}
                     className={`${inputClass} max-w-xs font-mono`}
@@ -512,6 +523,7 @@ function WhatsAppAccountSection() {
           {/* Right Scannable QR Code */}
           <div className="flex flex-col items-center gap-2 p-4 rounded-xl bg-white shadow-xs border border-outline-variant/30 shrink-0 self-center lg:self-auto">
             {account.qr_code_url ? (
+              /* eslint-disable-next-line @next/next/no-img-element -- a generated data: URL, nothing for next/image to optimise */
               <img
                 src={account.qr_code_url}
                 alt="Hospital WhatsApp Click-to-Chat QR Code"
@@ -553,7 +565,7 @@ function WhatsAppAccountSection() {
             <span className="font-label-md text-on-surface">WhatsApp Business Phone Number</span>
             <input
               type="tel"
-              placeholder="e.g. +91 98765 43210"
+              placeholder="International format, e.g. +91 …"
               value={form.displayPhoneNumber}
               onChange={(e) => setForm({ ...form, displayPhoneNumber: e.target.value })}
               className={`${inputClass} font-mono font-bold`}
@@ -568,7 +580,7 @@ function WhatsAppAccountSection() {
             <span className="font-label-md text-on-surface">Hospital Helpline / Clinic Name</span>
             <input
               type="text"
-              placeholder="e.g. St. Mary's Orthopedic Helpline"
+              placeholder="e.g. Orthopaedic Recovery Helpline"
               value={form.displayName}
               onChange={(e) => setForm({ ...form, displayName: e.target.value })}
               className={inputClass}
@@ -621,7 +633,7 @@ function WhatsAppAccountSection() {
             <span className="font-label-md text-on-surface">Webhook Verify Token</span>
             <input
               type="text"
-              placeholder="e.g. eras_stmarys_verify_2026"
+              placeholder="A secret you also enter in Meta's webhook settings"
               value={form.verifyToken}
               onChange={(e) => setForm({ ...form, verifyToken: e.target.value })}
               className={inputClass}

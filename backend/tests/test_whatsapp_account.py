@@ -1,100 +1,169 @@
 """
-Tests for Hospital WhatsApp Business Account management and QR code pairing.
+The hospital's WhatsApp account: who may change it, what everyone else sees,
+and that nothing on its way to a patient is made up.
 """
 
-import httpx
 import pytest
-from tests.conftest import NURSE, login_headers
+from sqlalchemy import text
+
+from app.core.config import settings
+from app.services import whatsapp
+from app.services.whatsapp import SendResult
+from tests.conftest import login_headers
+from tests.support import create_hospital
 
 
-@pytest.mark.asyncio
-async def test_get_whatsapp_account_returns_qr_code(client: httpx.AsyncClient):
-    headers = await login_headers(client, *NURSE)
-    res = await client.get("/api/v1/whatsapp/account", headers=headers)
+@pytest.fixture(autouse=True)
+def log_provider(monkeypatch):
+    monkeypatch.setattr(settings, "WHATSAPP_PROVIDER", "log")
+
+
+async def _superadmin(client, db, code):
+    hospital = await create_hospital(db, code, role="superadmin")
+    return hospital, await login_headers(client, hospital.email, hospital.password)
+
+
+def _account(phone_number_id, **changes):
+    return {
+        "display_phone_number": "+91 90000 11111",
+        "display_name": "Test Helpline",
+        "phone_number_id": phone_number_id,
+        "waba_id": "200000000000001",
+        "access_token": "EAAG-test-token",
+        "verify_token": "verify-test-secret",
+        **changes,
+    }
+
+
+async def test_every_clinician_sees_the_account_but_not_its_secrets(client, nurse_headers):
+    res = await client.get("/api/v1/whatsapp/account", headers=nurse_headers)
     assert res.status_code == 200
     data = res.json()
-    assert data is not None
-    assert data["display_name"] == "St. Mary's Orthopedic Helpline"
     assert data["display_phone_number"] == "+91 98765 43210"
-    assert data["phone_number_id"] == "104239857123456"
-    assert data["health_status"] == "healthy"
     assert data["qr_code_url"].startswith("data:image/png;base64,")
-    assert "https://wa.me/919876543210" in data["click_to_chat_url"]
-    assert "/api/v1/whatsapp/webhook" in data["webhook_url"]
+    assert data["click_to_chat_url"].startswith("https://wa.me/919876543210?text=")
+    assert data["webhook_url"] == f"{settings.PUBLIC_API_BASE_URL}/api/v1/whatsapp/webhook"
+    assert data["verify_token"] is None
+    assert data["access_token_masked"] == "••••••••"
 
 
-@pytest.mark.asyncio
-async def test_save_whatsapp_account(client: httpx.AsyncClient):
-    headers = await login_headers(client, *NURSE)
-    payload = {
-        "phone_number_id": "999888777111222",
-        "waba_id": "888777666555444",
-        "access_token": "mock_updated_token_test",
-        "verify_token": "test_verify_secret_123",
-        "meta_app_id": "112233445566778",
-    }
-    res = await client.post("/api/v1/whatsapp/account", json=payload, headers=headers)
-    assert res.status_code == 200
+async def test_only_a_superadmin_can_change_the_account_or_send_from_it(client, nurse_headers):
+    res = await client.post("/api/v1/whatsapp/account", json=_account("300000000000001"), headers=nurse_headers)
+    assert res.status_code == 403
+    assert (await client.delete("/api/v1/whatsapp/account", headers=nurse_headers)).status_code == 403
+    res = await client.post("/api/v1/whatsapp/test", json={"to_phone": "+919123456789"}, headers=nurse_headers)
+    assert res.status_code == 403
+
+    still = (await client.get("/api/v1/whatsapp/account", headers=nurse_headers)).json()
+    assert still["phone_number_id"] == "104239857123456"
+
+
+async def test_an_account_saved_without_meta_is_unverified(client, db):
+    hospital, headers = await _superadmin(client, db, "WA-CONNECT")
+    assert (await client.get("/api/v1/whatsapp/account", headers=headers)).json() is None
+
+    res = await client.post("/api/v1/whatsapp/account", json=_account("300000000000002"), headers=headers)
+    assert res.status_code == 200, res.text
     data = res.json()
-    assert data["phone_number_id"] == "999888777111222"
-    assert data["waba_id"] == "888777666555444"
-    assert data["verify_token"] == "test_verify_secret_123"
-    assert data["qr_code_url"].startswith("data:image/png;base64,")
+    assert data["hospital_id"] == hospital.hospital_id
+    assert data["display_phone_number"] == "+91 90000 11111"
+    assert data["display_name"] == "Test Helpline"
+    # The log provider checks nothing with Meta, so nothing is called healthy.
+    assert data["health_status"] == "unverified"
+    assert data["verify_token"] == "verify-test-secret"
+    assert data["click_to_chat_url"].startswith("https://wa.me/919000011111?text=")
 
 
-@pytest.mark.asyncio
-async def test_update_whatsapp_phone_number_and_name(client: httpx.AsyncClient):
-    headers = await login_headers(client, *NURSE)
-    payload = {
-        "display_phone_number": "+91 94444 88888",
-        "display_name": "St. Mary's Orthopedic Emergency Desk",
-        "phone_number_id": "104239857123456",
-        "waba_id": "108374829103948",
-        "verify_token": "eras_stmarys_verify_2026",
-    }
-    res = await client.post("/api/v1/whatsapp/account", json=payload, headers=headers)
+async def test_no_number_is_made_up_when_neither_the_form_nor_meta_gives_one(client, db):
+    _, headers = await _superadmin(client, db, "WA-NONUM")
+    res = await client.post(
+        "/api/v1/whatsapp/account",
+        json=_account("300000000000003", display_phone_number=None, display_name=None),
+        headers=headers,
+    )
+    assert res.status_code == 400
+    assert (await client.get("/api/v1/whatsapp/account", headers=headers)).json() is None
+
+
+async def test_a_display_number_must_be_a_phone_number(client, db):
+    _, headers = await _superadmin(client, db, "WA-BADNUM")
+    res = await client.post(
+        "/api/v1/whatsapp/account", json=_account("300000000000009", display_phone_number="call us"), headers=headers
+    )
+    assert res.status_code == 422
+
+
+async def test_an_update_without_a_token_keeps_the_stored_one(client, db):
+    hospital, headers = await _superadmin(client, db, "WA-KEEP")
+    await client.post("/api/v1/whatsapp/account", json=_account("300000000000004"), headers=headers)
+
+    res = await client.post(
+        "/api/v1/whatsapp/account",
+        json=_account("300000000000004", access_token=None, display_name="Renamed Helpline"),
+        headers=headers,
+    )
     assert res.status_code == 200
-    data = res.json()
-    assert data["display_phone_number"] == "+91 94444 88888"
-    assert data["display_name"] == "St. Mary's Orthopedic Emergency Desk"
-    assert "https://wa.me/919444488888" in data["click_to_chat_url"]
-    assert data["qr_code_url"].startswith("data:image/png;base64,")
+    assert res.json()["display_name"] == "Renamed Helpline"
+    stored = (await db.execute(
+        text("SELECT access_token FROM meta.hospital_whatsapp WHERE hospital_id = :h"), {"h": hospital.hospital_id}
+    )).scalar_one()
+    assert stored == "EAAG-test-token"
 
 
-@pytest.mark.asyncio
-async def test_send_test_whatsapp_message(client: httpx.AsyncClient):
-    headers = await login_headers(client, *NURSE)
-    payload = {
-        "to_phone": "+91 91234 56789",
-        "message": "Clinical test check-in message",
-    }
-    res = await client.post("/api/v1/whatsapp/test", json=payload, headers=headers)
+async def test_a_number_connected_to_another_hospital_is_refused(client, db):
+    _, headers = await _superadmin(client, db, "WA-DUP")
+    # The fixture hospital's Phone Number ID
+    res = await client.post("/api/v1/whatsapp/account", json=_account("104239857123456"), headers=headers)
+    assert res.status_code == 409
+
+
+async def test_a_test_message_goes_from_the_hospitals_own_number(client, db, monkeypatch, caplog):
+    _, headers = await _superadmin(client, db, "WA-TEST")
+    res = await client.post("/api/v1/whatsapp/test", json={"to_phone": "+91 91234 56789"}, headers=headers)
+    assert res.status_code == 400  # nothing connected yet
+
+    await client.post("/api/v1/whatsapp/account", json=_account("300000000000005"), headers=headers)
+
+    res = await client.post("/api/v1/whatsapp/test", json={"to_phone": "+91 91234 56789"}, headers=headers)
     assert res.status_code == 200
-    data = res.json()
-    assert data["status"] == "sent"
-    assert data["message_id"] is not None
+    assert res.json()["status"] == "sent"
+    assert "91234" not in caplog.text
+
+    posted = []
+
+    async def fake_post(credentials, payload, reference):
+        posted.append((credentials, payload))
+        return SendResult("sent", message_id="wamid.test")
+
+    monkeypatch.setattr(whatsapp, "_post", fake_post)
+    monkeypatch.setattr(settings, "WHATSAPP_PROVIDER", "meta")
+    res = await client.post("/api/v1/whatsapp/test", json={"to_phone": "+91 91234 56789"}, headers=headers)
+    assert res.json() == {"status": "sent", "message_id": "wamid.test", "error": None}
+    [(credentials, payload)] = posted
+    assert credentials.phone_number_id == "300000000000005"
+    assert credentials.access_token == "EAAG-test-token"
+    assert payload["to"] == "919123456789"
 
 
-@pytest.mark.asyncio
-async def test_disconnect_and_reconnect_whatsapp_account(client: httpx.AsyncClient):
-    headers = await login_headers(client, *NURSE)
+async def test_a_test_message_with_sending_disabled_says_nothing_was_sent(client, db, monkeypatch):
+    _, headers = await _superadmin(client, db, "WA-OFF")
+    await client.post("/api/v1/whatsapp/account", json=_account("300000000000006"), headers=headers)
+    monkeypatch.setattr(settings, "WHATSAPP_PROVIDER", "disabled")
 
-    # Disconnect
-    del_res = await client.delete("/api/v1/whatsapp/account", headers=headers)
-    assert del_res.status_code == 204
+    res = await client.post("/api/v1/whatsapp/test", json={"to_phone": "+919123456789"}, headers=headers)
+    assert res.json()["status"] == "queued"
+    assert "nothing was sent" in res.json()["error"]
 
-    # Verify None returned
-    get_res = await client.get("/api/v1/whatsapp/account", headers=headers)
-    assert get_res.status_code == 200
-    assert get_res.json() is None
 
-    # Reconnect
-    payload = {
-        "phone_number_id": "104239857123456",
-        "waba_id": "108374829103948",
-        "access_token": "mock_reconnect_token",
-        "verify_token": "eras_stmarys_verify_2026",
-    }
-    reconnect_res = await client.post("/api/v1/whatsapp/account", json=payload, headers=headers)
-    assert reconnect_res.status_code == 200
-    assert reconnect_res.json()["phone_number_id"] == "104239857123456"
+async def test_disconnect_and_reconnect(client, db):
+    _, headers = await _superadmin(client, db, "WA-DISC")
+    await client.post("/api/v1/whatsapp/account", json=_account("300000000000007"), headers=headers)
+
+    assert (await client.delete("/api/v1/whatsapp/account", headers=headers)).status_code == 204
+    assert (await client.get("/api/v1/whatsapp/account", headers=headers)).json() is None
+
+    # Reconnecting needs the token again: nothing is kept after a disconnect.
+    res = await client.post("/api/v1/whatsapp/account", json=_account("300000000000007", access_token=None), headers=headers)
+    assert res.status_code == 400
+    res = await client.post("/api/v1/whatsapp/account", json=_account("300000000000007"), headers=headers)
+    assert res.status_code == 200

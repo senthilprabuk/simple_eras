@@ -1,19 +1,22 @@
 """
-WhatsApp message wording, per hospital, template and language. Stored for the
-WhatsApp integration; nothing in this service sends messages yet.
+WhatsApp message wording, per hospital, template and language.
+app.services.patient_messages sends checkin_reminder, checkin_confirmation and
+urgent_guidance from it; enrollment_welcome and missed_checkin have no sender yet.
 """
 
 from typing import get_args
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import AuthenticatedAdmin, get_current_admin, require_superadmin
 from app.db.session import get_db
 from app.schemas.template import (
+    PLACEHOLDER_PATTERN,
     PLACEHOLDERS,
     TEMPLATE_PURPOSES,
+    UNFILLABLE_PLACEHOLDERS,
     TemplateCatalogue,
     TemplateEntry,
     TemplateKey,
@@ -59,6 +62,13 @@ async def save_template(
     db: AsyncSession = Depends(get_db),
 ):
     """Create or replace one template. Patient-facing wording, so superadmins only."""
+    unfillable = sorted(set(PLACEHOLDER_PATTERN.findall(update.body)) & UNFILLABLE_PLACEHOLDERS.get(template_key, set()))
+    if unfillable:
+        raise HTTPException(
+            status_code=422,
+            detail=f"This message cannot fill {', '.join('{' + n + '}' for n in unfillable)}",
+        )
+
     row = (await db.execute(text("""
         INSERT INTO meta.message_template (hospital_id, template_key, language_code, body, is_active, updated_by)
         VALUES (:h_id, :key, :lang, :body, :active, :admin_id)

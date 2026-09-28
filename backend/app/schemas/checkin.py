@@ -98,3 +98,8 @@ class CheckInReceipt(BaseModel):
     low_confidence: bool = Field(
         False, description="Too little of the day was answered to read much into the verdict"
     )
+    patient_message_status: Optional[str] = Field(
+        None,
+        description="The WhatsApp reply to the patient: sent, queued or failed. Null when none was due, "
+                    "which is every submission not made through the patient's check-in link",
+    )

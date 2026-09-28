@@ -1,44 +1,33 @@
 """
-WhatsApp Click-to-Chat QR Code generator.
+WhatsApp click-to-chat QR code for a hospital's number.
 
-Encodes an official wa.me click-to-chat link with a pre-filled greeting message.
-When scanned with any smartphone camera, WhatsApp opens directly to the hospital's
-verified chat thread.
+Encodes a wa.me link with a pre-filled greeting. Scanned with a phone camera, it
+opens WhatsApp on a chat with the hospital, which also opens the 24-hour window
+in which the hospital may reply with free text.
 """
 
 import base64
 import io
-import re
 import urllib.parse
-from typing import Dict, Tuple
+from typing import Tuple
 
 import qrcode
 
-
-def clean_phone_digits(phone: str) -> str:
-    """Strip all non-digit characters from phone number."""
-    if not phone:
-        return ""
-    return re.sub(r"\D", "", phone)
+from app.services.whatsapp import normalize_phone
 
 
-def build_whatsapp_url(phone_e164: str, prefilled_message: str = "Hello from St. Mary's ERAS Patient") -> str:
-    """Build official WhatsApp click-to-chat URL."""
-    digits = clean_phone_digits(phone_e164)
-    encoded = urllib.parse.quote(prefilled_message)
-    return f"https://wa.me/{digits}?text={encoded}"
+def build_whatsapp_url(phone_e164: str, prefilled_message: str) -> str:
+    """Official WhatsApp click-to-chat URL."""
+    return f"https://wa.me/{normalize_phone(phone_e164)}?text={urllib.parse.quote(prefilled_message)}"
 
 
 def generate_whatsapp_qr_code(
     phone_e164: str,
-    prefilled_message: str = "Hello from St. Mary's ERAS Patient",
+    prefilled_message: str,
     fill_color: str = "#0F6E56",
     back_color: str = "white",
 ) -> Tuple[str, str]:
-    """
-    Generate a PNG QR code encoding the WhatsApp click-to-chat URL.
-    Returns (wa_url, base64_png_data_url).
-    """
+    """Return (wa.me URL, PNG data URL of a QR code encoding it)."""
     wa_url = build_whatsapp_url(phone_e164, prefilled_message)
 
     qr = qrcode.QRCode(
@@ -50,11 +39,6 @@ def generate_whatsapp_qr_code(
     qr.add_data(wa_url)
     qr.make(fit=True)
 
-    img = qr.make_image(fill_color=fill_color, back_color=back_color)
-
     buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
-    b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
-    data_url = f"data:image/png;base64,{b64}"
-
-    return wa_url, data_url
+    qr.make_image(fill_color=fill_color, back_color=back_color).save(buffer, format="PNG")
+    return wa_url, f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode('ascii')}"

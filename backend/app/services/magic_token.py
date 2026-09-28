@@ -1,8 +1,9 @@
 """
-Magic Token service for Patient WhatsApp Check-in Links.
+Signed check-in links for WhatsApp reminders.
 
-Generates and validates tamper-proof, time-bound signed tokens embedding
-the patient's episode_id and target post-op day.
+A link carries the episode and the post-op day it was sent for, signed so it
+cannot be altered, and expires after a day. It is a credential for that
+patient's check-in: it is minted when the reminder is sent and never stored.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -10,13 +11,15 @@ from typing import Any, Dict, Optional, Union
 from uuid import UUID
 
 import jwt
-from fastapi import HTTPException, status
 
 from app.core.config import settings
 
-
 MAGIC_TOKEN_PURPOSE = "checkin"
 DEFAULT_EXPIRY_HOURS = 24
+
+
+class InvalidCheckInLink(Exception):
+    """The link is missing, altered, expired or not a check-in link. str() is safe to show the patient."""
 
 
 def generate_magic_token(
@@ -24,13 +27,9 @@ def generate_magic_token(
     day: int,
     expires_delta: Optional[timedelta] = None,
 ) -> str:
-    """
-    Generate a signed URL-safe JWT for a 1-click patient check-in.
-    Default validity: 24 hours from dispatch.
-    """
+    """A URL-safe signed token for one episode's check-in on one post-op day."""
     now = datetime.now(timezone.utc)
-    delta = expires_delta or timedelta(hours=DEFAULT_EXPIRY_HOURS)
-    expire = now + delta
+    expire = now + (expires_delta or timedelta(hours=DEFAULT_EXPIRY_HOURS))
 
     payload = {
         "sub": str(episode_id),
@@ -39,25 +38,13 @@ def generate_magic_token(
         "iat": int(now.timestamp()),
         "exp": int(expire.timestamp()),
     }
-
-    return jwt.encode(
-        payload,
-        settings.JWT_SECRET_KEY,
-        algorithm=settings.JWT_ALGORITHM,
-    )
+    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
 def validate_magic_token(token: str) -> Dict[str, Any]:
-    """
-    Validate a magic token signature and expiration.
-    Returns {"episode_id": UUID, "day": int}.
-    Raises HTTPException(401) on any signature or expiry error.
-    """
+    """Return {"episode_id": UUID, "day": int}, or raise InvalidCheckInLink."""
     if not token or not token.strip():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Check-in token is missing",
-        )
+        raise InvalidCheckInLink("Check-in token is missing")
 
     try:
         payload = jwt.decode(
@@ -67,32 +54,16 @@ def validate_magic_token(token: str) -> Dict[str, Any]:
             options={"require": ["sub", "day", "purpose", "exp"]},
         )
     except jwt.ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="This check-in link has expired. Please wait for your next daily reminder or contact the clinic.",
+        raise InvalidCheckInLink(
+            "This check-in link has expired. Please wait for your next daily reminder or contact the clinic."
         )
     except jwt.PyJWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid check-in link.",
-        )
+        raise InvalidCheckInLink("Invalid check-in link.")
 
     if payload.get("purpose") != MAGIC_TOKEN_PURPOSE:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token is not valid for patient check-in.",
-        )
+        raise InvalidCheckInLink("Token is not valid for patient check-in.")
 
     try:
-        episode_uuid = UUID(payload["sub"])
-        day = int(payload["day"])
+        return {"episode_id": UUID(payload["sub"]), "day": int(payload["day"])}
     except (ValueError, KeyError, TypeError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Malformed check-in token payload.",
-        )
-
-    return {
-        "episode_id": episode_uuid,
-        "day": day,
-    }
+        raise InvalidCheckInLink("Malformed check-in token payload.")

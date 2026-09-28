@@ -88,7 +88,12 @@ grant update (phone_e164, language_code, date_of_birth, gender,
 grant update (hospital_name, city, timezone, ack_window_secs) on meta.hospital to eras_app;
 grant select, insert, update on meta.message_template to eras_app;
 grant select, insert, update on txn.patient_message to eras_app;
-grant select, insert, update, delete on meta.hospital_whatsapp to eras_app;
+-- every column but the Meta access token, a long-lived credential
+grant select (account_id, hospital_id, display_name, display_phone_number, phone_number_id,
+              waba_id, verify_token, meta_app_id, health_status, is_default, is_active,
+              created_at, updated_at)
+    on meta.hospital_whatsapp to eras_app;
+grant insert, update, delete on meta.hospital_whatsapp to eras_app;
 
 
 -- ---------------------------------------------------------------------
@@ -236,7 +241,10 @@ insert into meta.schema_migration (version, name) values
     ('007', '007_app_admin'),
     ('008', '008_rule_direction'),
     ('009', '009_composite_signals'),
-    ('010', '010_operative_side')
+    ('010', '010_operative_side'),
+    ('011', '011_patient_messages'),
+    ('012', '012_hospital_whatsapp'),
+    ('013', '013_whatsapp_hardening')
 on conflict (version) do nothing;
 
 commit;

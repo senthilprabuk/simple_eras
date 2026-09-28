@@ -481,7 +481,8 @@ export interface WhatsAppAccount {
   waba_id: string;
   meta_app_id: string | null;
   access_token_masked: string;
-  verify_token: string;
+  /** Only a superadmin, who can change it, is sent the webhook verify token. */
+  verify_token: string | null;
   health_status: "healthy" | "invalid_token" | "rate_limited" | "unverified";
   is_active: boolean;
   qr_code_url: string;

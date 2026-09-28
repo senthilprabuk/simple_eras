@@ -8,7 +8,7 @@ def _entry(catalogue, key, lang):
 
 async def test_catalogue_lists_every_template_in_every_language(client, nurse_headers):
     catalogue = (await client.get("/api/v1/templates", headers=nurse_headers)).json()
-    assert len(catalogue["templates"]) == 12
+    assert len(catalogue["templates"]) == 15
     assert set(catalogue["placeholders"]) == {"patient_first_name", "hospital_name", "post_op_day", "checkin_link"}
 
     reminder = _entry(catalogue, "checkin_reminder", "en")
@@ -51,3 +51,15 @@ async def test_bad_wording_is_rejected_before_it_can_reach_a_patient(client, db)
         assert res.status_code == 422, body
     for path in ("/api/v1/templates/newsletter/en", "/api/v1/templates/checkin_reminder/fr"):
         assert (await client.put(path, json={"body": "Hello"}, headers=headers)).status_code == 422
+
+
+async def test_a_reply_cannot_promise_a_link_it_has_no_value_for(client, db):
+    h = await create_hospital(db, "TPL-LINK", role="superadmin")
+    headers = await login_headers(client, h.email, h.password)
+    body = "Thanks {patient_first_name}, see {checkin_link}"
+
+    for key in ("checkin_confirmation", "urgent_guidance"):
+        res = await client.put(f"/api/v1/templates/{key}/en", json={"body": body}, headers=headers)
+        assert res.status_code == 422
+        assert "{checkin_link}" in res.json()["detail"]
+    assert (await client.put("/api/v1/templates/checkin_reminder/en", json={"body": body}, headers=headers)).status_code == 200

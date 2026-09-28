@@ -73,6 +73,8 @@ export interface CheckInReceipt {
   values_recorded: number;
   superseded_count: number;
   duplicate: boolean;
+  /** The WhatsApp reply to the patient: null when none was due (every check-in not made through the patient's link). */
+  patient_message_status: "sent" | "queued" | "failed" | null;
 }
 
 export type AnswerValue = number | boolean | string | null;
@@ -80,7 +82,11 @@ export type Answers = Record<string, AnswerValue>;
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE_URL}${path}`);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    // A check-in link's detail (expired, from an earlier day) is written for the patient.
+    const body = await res.json().catch(() => ({}));
+    throw new Error(typeof body.detail === "string" ? body.detail : `${res.status} ${res.statusText}`);
+  }
   return res.json();
 }
 

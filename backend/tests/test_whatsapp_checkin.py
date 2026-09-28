@@ -1,110 +1,170 @@
+"""
+Check-ins made through the WhatsApp link. The link is bound to one episode and
+one day, and only a check-in made through it messages the patient back.
+"""
+
 from uuid import uuid4
+
 import pytest
 from sqlalchemy import text
 
+from app.core.config import settings
 from app.services.magic_token import generate_magic_token
+from app.services.patient_messages import reply_type_for
+from tests.support import create_hospital
 
 
-@pytest.mark.asyncio
-async def test_checkin_form_with_magic_token(client, db):
-    # Find an active episode
-    row = (await db.execute(text("""
-        SELECT e.episode_id, e.hospital_id, p.patient_name,
-               ((now() AT TIME ZONE h.timezone)::date - e.discharge_date)::int AS post_op_day
-        FROM txn.patient_episode e
-        JOIN meta.hospital h ON h.hospital_id = e.hospital_id
-        JOIN txn.patient p   ON p.patient_id = e.patient_id
-        WHERE e.status = 'active'
-        LIMIT 1
-    """))).mappings().first()
-    assert row is not None
-
-    episode_id = row["episode_id"]
-    day = row["post_op_day"]
-
-    # Generate token
-    token = generate_magic_token(episode_id, day)
-
-    # Fetch form using token
-    res = await client.get(f"/api/v1/checkin/form?token={token}")
-    assert res.status_code == 200, res.text
-    data = res.json()
-
-    assert data["episode"]["episode_id"] == str(episode_id)
-    assert data["episode"]["patient_name"] == row["patient_name"]
-    assert data["effective_day"] == day
-    assert data["simulated"] is False
-    assert len(data["sections"]) > 0
+@pytest.fixture(autouse=True)
+def log_provider(monkeypatch):
+    monkeypatch.setattr(settings, "WHATSAPP_PROVIDER", "log")
 
 
-@pytest.mark.asyncio
-async def test_checkin_submission_triggers_whatsapp_confirmation(client, db):
-    # Find an active episode with parameters
-    row = (await db.execute(text("""
-        SELECT e.episode_id, p.phone_e164,
-               ((now() AT TIME ZONE h.timezone)::date - e.discharge_date)::int AS post_op_day
-        FROM txn.patient_episode e
-        JOIN meta.hospital h ON h.hospital_id = e.hospital_id
-        JOIN txn.patient p   ON p.patient_id = e.patient_id
-        WHERE e.status = 'active'
-        LIMIT 1
-    """))).mappings().first()
-    assert row is not None
-
-    episode_id = row["episode_id"]
-    day = row["post_op_day"]
-
-    # Clear prior messages
-    await db.execute(text("DELETE FROM txn.patient_message WHERE episode_id = :e"), {"e": episode_id})
+async def _linked_patient(db, code):
+    """A patient on today's check-in, at a hospital with reply wording."""
+    hospital = await create_hospital(db, code)
+    day = (await db.execute(text("""
+        SELECT ((now() AT TIME ZONE h.timezone)::date - e.discharge_date)::int
+        FROM txn.patient_episode e JOIN meta.hospital h ON h.hospital_id = e.hospital_id
+        WHERE e.episode_id = :e
+    """), {"e": hospital.episode_id})).scalar_one()
+    await db.execute(text("""
+        INSERT INTO meta.message_template (hospital_id, template_key, language_code, body) VALUES
+            (:h, 'checkin_confirmation', 'en', 'Thank you {patient_first_name}, day {post_op_day} reached {hospital_name}.'),
+            (:h, 'urgent_guidance', 'en', '{patient_first_name}, please call {hospital_name} now.')
+    """), {"h": hospital.hospital_id})
     await db.commit()
+    return hospital, day
 
-    token = generate_magic_token(episode_id, day)
 
-    # Get the form to pick valid parameters
-    form_res = await client.get(f"/api/v1/checkin/form?token={token}")
-    assert form_res.status_code == 200
-    form = form_res.json()
-
-    # Collect answers for first section
+def _answers(form):
     answers = []
-    for s in form["sections"]:
-        for p in s["parameters"]:
+    for section in form["sections"]:
+        for p in section["parameters"]:
             if p["type"] == "numeric":
-                answers.append({"parameter_id": p["parameter_id"], "value_num": 0.0})
+                answers.append({"parameter_id": p["parameter_id"], "value_num": p["value_min"] or 0.0})
             elif p["type"] == "boolean":
                 answers.append({"parameter_id": p["parameter_id"], "value_bool": False})
             elif p["type"] == "ordinal" and p["options"]:
                 answers.append({"parameter_id": p["parameter_id"], "value_code": p["options"][0]["code"]})
+    return answers
 
-    # Submit check-in
-    key = f"test-checkin-{uuid4().hex}"
-    submit_payload = {
+
+def _submission(episode_id, day, token, values, **changes):
+    return {
         "episode_id": str(episode_id),
         "day_after_discharge": day,
-        "idempotency_key": key,
+        "idempotency_key": f"link-{uuid4().hex}",
         "simulated": False,
         "token": token,
-        "values": answers,
+        "values": values,
+        **changes,
     }
 
-    sub_res = await client.post("/api/v1/checkin", json=submit_payload)
-    assert sub_res.status_code == 201, sub_res.text
-    receipt = sub_res.json()
-    assert receipt["values_recorded"] == len(answers)
 
-    # Verify a WhatsApp message was logged in txn.patient_message
-    msg = (await db.execute(
-        text("""
-            SELECT message_type, status, direction, channel, body
-            FROM txn.patient_message
-            WHERE episode_id = :e AND message_type IN ('checkin_confirmation', 'urgent_guidance')
-            ORDER BY created_at DESC
-            LIMIT 1
-        """),
-        {"e": episode_id},
-    )).mappings().first()
+async def _messages(db, episode_id):
+    return (await db.execute(text("""
+        SELECT message_type, status, body, attempts FROM txn.patient_message
+        WHERE episode_id = :e ORDER BY created_at
+    """), {"e": episode_id})).mappings().all()
 
-    assert msg is not None
-    assert msg["status"] == "sent"
-    assert msg["direction"] == "outbound"
-    assert msg["channel"] == "whatsapp"
+
+async def test_the_link_opens_its_own_day_and_knows_when_it_is_done(client, db):
+    hospital, day = await _linked_patient(db, "LINK-FORM")
+    token = generate_magic_token(hospital.episode_id, day)
+
+    form = (await client.get(f"/api/v1/checkin/form?token={token}")).json()
+    assert form["episode"]["episode_id"] == str(hospital.episode_id)
+    assert form["effective_day"] == day
+    assert form["simulated"] is False
+    assert form["already_submitted_today"] is False
+
+    res = await client.post("/api/v1/checkin", json=_submission(hospital.episode_id, day, token, _answers(form)))
+    assert res.status_code == 201, res.text
+
+    again = (await client.get(f"/api/v1/checkin/form?token={token}")).json()
+    assert again["already_submitted_today"] is True
+
+
+async def test_a_check_in_through_the_link_is_answered_on_whatsapp(client, db):
+    hospital, day = await _linked_patient(db, "LINK-REPLY")
+    token = generate_magic_token(hospital.episode_id, day)
+    form = (await client.get(f"/api/v1/checkin/form?token={token}")).json()
+
+    res = await client.post("/api/v1/checkin", json=_submission(hospital.episode_id, day, token, _answers(form)))
+    receipt = res.json()
+    assert receipt["patient_message_status"] == "sent"
+
+    [message] = await _messages(db, hospital.episode_id)
+    assert message["message_type"] == reply_type_for(receipt["tier"])
+    assert message["status"] == "sent"
+    assert message["attempts"] == 1
+    assert message["body"].startswith("Thank you Patient, day") or message["body"].startswith("Patient, please call")
+
+
+async def test_a_simulator_check_in_never_messages_the_patient(client, db):
+    hospital, day = await _linked_patient(db, "LINK-SIM")
+    form = (await client.get(f"/api/v1/checkin/form?episode_id={hospital.episode_id}")).json()
+
+    res = await client.post(
+        "/api/v1/checkin", json=_submission(hospital.episode_id, day, None, _answers(form))
+    )
+    assert res.status_code == 201
+    assert res.json()["patient_message_status"] is None
+    assert await _messages(db, hospital.episode_id) == []
+
+
+async def test_the_link_is_bound_to_its_episode_and_day(client, db):
+    hospital, day = await _linked_patient(db, "LINK-BIND")
+    token = generate_magic_token(hospital.episode_id, day)
+    other, _ = await _linked_patient(db, "LINK-BIND-2")
+
+    res = await client.post("/api/v1/checkin", json=_submission(other.episode_id, day, token, []))
+    assert res.status_code == 403
+    assert await _messages(db, other.episode_id) == []
+    res = await client.post("/api/v1/checkin", json=_submission(hospital.episode_id, day - 1, token, []))
+    assert res.status_code == 403
+    res = await client.post("/api/v1/checkin", json=_submission(hospital.episode_id, day, token, [], simulated=True))
+    assert res.status_code == 400
+    res = await client.post("/api/v1/checkin", json=_submission(hospital.episode_id, day, token[:-4] + "xyz1", []))
+    assert res.status_code == 401
+    assert await _messages(db, hospital.episode_id) == []
+
+
+async def test_a_link_from_an_earlier_day_is_refused(client, db):
+    hospital, day = await _linked_patient(db, "LINK-STALE")
+    yesterdays = generate_magic_token(hospital.episode_id, day - 1)
+
+    assert (await client.get(f"/api/v1/checkin/form?token={yesterdays}")).status_code == 410
+    res = await client.post("/api/v1/checkin", json=_submission(hospital.episode_id, day - 1, yesterdays, []))
+    assert res.status_code == 410
+
+
+async def test_with_sending_disabled_the_reply_waits_and_is_not_reported_sent(client, db, monkeypatch):
+    monkeypatch.setattr(settings, "WHATSAPP_PROVIDER", "disabled")
+    hospital, day = await _linked_patient(db, "LINK-OFF")
+    token = generate_magic_token(hospital.episode_id, day)
+
+    res = await client.post("/api/v1/checkin", json=_submission(hospital.episode_id, day, token, []))
+    assert res.json()["patient_message_status"] == "queued"
+    [message] = await _messages(db, hospital.episode_id)
+    assert message["status"] == "queued"
+    assert message["attempts"] == 0
+
+
+async def test_without_reply_wording_nothing_is_sent_and_the_gap_is_logged(client, db):
+    hospital = await create_hospital(db, "LINK-NOWORD")
+    form = (await client.get(f"/api/v1/checkin/form?episode_id={hospital.episode_id}")).json()
+    day = form["episode"]["actual_post_op_day"]
+    token = generate_magic_token(hospital.episode_id, day)
+
+    res = await client.post("/api/v1/checkin", json=_submission(hospital.episode_id, day, token, []))
+    assert res.status_code == 201
+    assert res.json()["patient_message_status"] is None
+    [message] = await _messages(db, hospital.episode_id)
+    assert message["status"] == "failed"
+
+
+def test_only_a_critical_verdict_gets_urgent_guidance():
+    assert reply_type_for("critical") == "urgent_guidance"
+    assert reply_type_for("review") == "checkin_confirmation"
+    assert reply_type_for("normal") == "checkin_confirmation"

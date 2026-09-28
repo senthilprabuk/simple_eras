@@ -1,14 +1,21 @@
 """
-WhatsApp messaging service for patient check-ins and clinical guidance.
+WhatsApp transport: one call to Meta's Cloud API per message.
 
-Supports:
-- Meta WhatsApp Cloud API (Graph API v21.0)
-- Local dev logger / mock dispatch
-- Disabled safety mode
+WHATSAPP_PROVIDER selects what happens:
+  disabled  send nothing and report the message still queued, so an unconfigured
+            deployment never looks as though a patient was told when they were not
+  log       write a line to the application log and report it sent (development)
+  meta      send through the Graph API with the hospital's own credentials, or the
+            platform's META_* settings when the hospital has none
+
+Patient details stay out of the log. The number and text are in
+txn.patient_message, and a reminder's text carries a check-in link that works as
+a credential for the patient's day.
 """
 
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -18,156 +25,122 @@ from app.core.config import settings
 
 logger = logging.getLogger("eras.whatsapp")
 
+GRAPH_URL = "https://graph.facebook.com"
+SEND_TIMEOUT_SECS = 15.0
+
+
+@dataclass(frozen=True)
+class Credentials:
+    phone_number_id: str
+    access_token: str
+
+
+@dataclass(frozen=True)
+class SendResult:
+    status: str  # sent, queued (nothing attempted) or failed
+    message_id: Optional[str] = None
+    error: Optional[str] = None
+    # A timeout, rate limit or Meta outage may pass; a rejected number or template will not.
+    retryable: bool = False
+
 
 def normalize_phone(phone: str) -> str:
-    """Normalize phone number to international digits-only (stripping +, spaces, hyphens)."""
-    if not phone:
-        return ""
-    return re.sub(r"\D", "", phone)
+    """Digits only, as the Graph API and wa.me links expect: '+91 98765 43210' -> '919876543210'."""
+    return re.sub(r"\D", "", phone or "")
 
 
-def _get_meta_url(phone_number_id: Optional[str] = None, endpoint: str = "messages") -> str:
-    pid = phone_number_id or settings.META_PHONE_NUMBER_ID or ""
-    return f"https://graph.facebook.com/{settings.META_API_VERSION}/{pid}/{endpoint}"
+def resolve_credentials(phone_number_id: Optional[str], access_token: Optional[str]) -> Optional[Credentials]:
+    """The hospital's own account if it has one, else the platform's, else None."""
+    if phone_number_id and access_token:
+        return Credentials(phone_number_id, access_token)
+    if settings.META_PHONE_NUMBER_ID and settings.META_ACCESS_TOKEN:
+        return Credentials(settings.META_PHONE_NUMBER_ID, settings.META_ACCESS_TOKEN)
+    return None
 
 
 async def send_whatsapp_text(
-    to: str,
-    body: str,
-    preview_url: bool = True,
-    phone_number_id: Optional[str] = None,
-    access_token: Optional[str] = None,
-) -> Dict[str, Any]:
+    to: str, body: str, credentials: Optional[Credentials], *, reference: str
+) -> SendResult:
     """
-    Send an outbound text message via WhatsApp.
-    Uses hospital-specific phone_number_id and access_token if provided,
-    otherwise falls back to system settings.
+    Free text. WhatsApp delivers it only within 24 hours of the recipient last
+    writing to this number, so patient messages go as templates instead.
     """
-    clean_phone = normalize_phone(to)
-    active_token = access_token or settings.META_ACCESS_TOKEN
-    active_pid = phone_number_id or settings.META_PHONE_NUMBER_ID
-
-    if settings.WHATSAPP_PROVIDER == "disabled":
-        logger.warning(
-            "WHATSAPP_PROVIDER is 'disabled'. Message to %s suppressed.", clean_phone
-        )
-        return {"status": "queued", "message_id": None}
-
-    if settings.WHATSAPP_PROVIDER == "log" or not active_token or active_token.startswith("mock_"):
-        mock_id = f"wamid.mock_{uuid4().hex}"
-        logger.info(
-            "\n" + "=" * 70 + "\n"
-            "[WHATSAPP DISPATCH] To: +%s (from pid: %s, wamid: %s)\n"
-            "%s\n" + "=" * 70,
-            clean_phone,
-            active_pid or "default",
-            mock_id,
-            body,
-        )
-        return {"status": "sent", "message_id": mock_id}
-
-    # Meta Cloud API
-    payload = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": clean_phone,
-        "type": "text",
-        "text": {
-            "preview_url": preview_url,
-            "body": body,
-        },
-    }
-
-    headers = {
-        "Authorization": f"Bearer {active_token}",
-        "Content-Type": "application/json",
-    }
-
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        try:
-            response = await client.post(
-                _get_meta_url(phone_number_id=active_pid, endpoint="messages"),
-                headers=headers,
-                json=payload,
-            )
-            data = response.json()
-            if response.status_code >= 400:
-                err_detail = data.get("error", {}).get("message", response.text)
-                logger.error("Meta WhatsApp API error (%s): %s", response.status_code, err_detail)
-                return {"status": "failed", "error": err_detail, "message_id": None}
-
-            wamid = None
-            if "messages" in data and len(data["messages"]) > 0:
-                wamid = data["messages"][0].get("id")
-
-            return {"status": "sent", "message_id": wamid}
-        except Exception as exc:
-            logger.exception("Failed to dispatch WhatsApp message to %s: %s", clean_phone, exc)
-            return {"status": "failed", "error": str(exc), "message_id": None}
+    return await _send(
+        to,
+        {"type": "text", "text": {"preview_url": False, "body": body}},
+        credentials,
+        reference=reference,
+        described_as="free text",
+    )
 
 
 async def send_whatsapp_template(
     to: str,
     template_name: str,
-    language_code: str = "en",
-    components: Optional[List[Dict[str, Any]]] = None,
-    phone_number_id: Optional[str] = None,
-    access_token: Optional[str] = None,
-) -> Dict[str, Any]:
-    """
-    Send an approved Meta WhatsApp template message.
-    """
-    clean_phone = normalize_phone(to)
-    active_token = access_token or settings.META_ACCESS_TOKEN
-    active_pid = phone_number_id or settings.META_PHONE_NUMBER_ID
+    language_code: str,
+    parameters: List[str],
+    credentials: Optional[Credentials],
+    *,
+    reference: str,
+) -> SendResult:
+    """An approved Meta template; parameters fill its {{1}}, {{2}}... in order."""
+    template: Dict[str, Any] = {"name": template_name, "language": {"code": language_code}}
+    if parameters:
+        template["components"] = [
+            {"type": "body", "parameters": [{"type": "text", "text": p} for p in parameters]}
+        ]
+    return await _send(
+        to,
+        {"type": "template", "template": template},
+        credentials,
+        reference=reference,
+        described_as=f"template {template_name} ({language_code}) with {len(parameters)} variable(s)",
+    )
 
+
+async def _send(
+    to: str, content: Dict[str, Any], credentials: Optional[Credentials], *, reference: str, described_as: str
+) -> SendResult:
     if settings.WHATSAPP_PROVIDER == "disabled":
-        return {"status": "queued", "message_id": None}
+        return SendResult("queued")
 
-    if settings.WHATSAPP_PROVIDER == "log" or not settings.META_ACCESS_TOKEN:
-        mock_id = f"wamid.mock_tpl_{uuid4().hex}"
-        logger.info(
-            "[WHATSAPP TEMPLATE MOCK] To: +%s | Template: %s (%s) | Components: %s",
-            clean_phone,
-            template_name,
-            language_code,
-            components,
-        )
-        return {"status": "sent", "message_id": mock_id}
+    if settings.WHATSAPP_PROVIDER == "log":
+        logger.info("[whatsapp:log] %s: %s", reference, described_as)
+        return SendResult("sent", message_id=f"log.{uuid4().hex}")
 
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": clean_phone,
-        "type": "template",
-        "template": {
-            "name": template_name,
-            "language": {"code": language_code},
-            "components": components or [],
-        },
-    }
+    if credentials is None:
+        return SendResult("failed", error="No WhatsApp account is connected for this hospital")
 
-    headers = {
-        "Authorization": f"Bearer {settings.META_ACCESS_TOKEN}",
-        "Content-Type": "application/json",
-    }
+    payload = {"messaging_product": "whatsapp", "recipient_type": "individual", "to": normalize_phone(to), **content}
+    return await _post(credentials, payload, reference)
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        try:
+
+async def _post(credentials: Credentials, payload: Dict[str, Any], reference: str) -> SendResult:
+    url = f"{GRAPH_URL}/{settings.META_API_VERSION}/{credentials.phone_number_id}/messages"
+    try:
+        async with httpx.AsyncClient(timeout=SEND_TIMEOUT_SECS) as client:
             response = await client.post(
-                _get_meta_url("messages"),
-                headers=headers,
-                json=payload,
+                url, headers={"Authorization": f"Bearer {credentials.access_token}"}, json=payload
             )
-            data = response.json()
-            if response.status_code >= 400:
-                err_detail = data.get("error", {}).get("message", response.text)
-                logger.error("Meta Template API error (%s): %s", response.status_code, err_detail)
-                return {"status": "failed", "error": err_detail, "message_id": None}
+    except httpx.HTTPError as exc:
+        # A timeout can mean Meta sent it anyway, so a retry may duplicate the
+        # message; that is better than the patient never hearing.
+        logger.warning("WhatsApp send for %s did not complete: %s", reference, type(exc).__name__)
+        return SendResult("failed", error=f"Could not reach Meta ({type(exc).__name__})", retryable=True)
 
-            wamid = None
-            if "messages" in data and len(data["messages"]) > 0:
-                wamid = data["messages"][0].get("id")
-            return {"status": "sent", "message_id": wamid}
-        except Exception as exc:
-            logger.exception("Failed to dispatch WhatsApp template to %s: %s", clean_phone, exc)
-            return {"status": "failed", "error": str(exc), "message_id": None}
+    try:
+        data = response.json()
+    except ValueError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    if response.status_code >= 400:
+        error = (data.get("error") or {}).get("message") or f"HTTP {response.status_code}"
+        logger.warning("Meta rejected WhatsApp send for %s (%s): %s", reference, response.status_code, error)
+        return SendResult(
+            "failed", error=error, retryable=response.status_code == 429 or response.status_code >= 500
+        )
+
+    messages = data.get("messages") or [{}]
+    return SendResult("sent", message_id=messages[0].get("id"))

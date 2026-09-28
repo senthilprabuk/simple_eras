@@ -175,7 +175,11 @@ export default function TemplatesPage() {
       <PageHeader title="WhatsApp templates" />
       <PageBody>
         <Notice icon="chat">
-          These are the automated messages patients receive on WhatsApp throughout their recovery. Wording is sent dynamically based on the patient&apos;s language and post-operative day.
+          The daily check-in reminder, the check-in confirmation and the urgent symptom guidance are sent to patients on
+          WhatsApp in their language, or in English when it has not been written yet. The enrolment welcome and missed
+          check-in messages are not sent yet. Meta only delivers wording it has approved: submit each message to Meta as
+          a template with the same name as here (for example checkin_reminder), numbering its placeholders {"{{1}}"},{" "}
+          {"{{2}}"}… in the order they appear.
         </Notice>
 
         {error && <ErrorBanner message={error} onRetry={reload} />}

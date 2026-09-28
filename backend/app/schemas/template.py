@@ -1,6 +1,6 @@
 import re
 from datetime import datetime
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Set
 from pydantic import BaseModel, Field, field_validator
 
 TemplateKey = Literal["enrollment_welcome", "checkin_reminder", "missed_checkin", "urgent_guidance", "checkin_confirmation"]
@@ -24,6 +24,12 @@ TEMPLATE_PURPOSES: Dict[str, str] = {
 }
 
 PLACEHOLDER_PATTERN = re.compile(r"\{([^{}]*)\}")
+
+# Placeholders a message has no value for: a reply to a check-in has no link to give.
+UNFILLABLE_PLACEHOLDERS: Dict[str, Set[str]] = {
+    "checkin_confirmation": {"checkin_link"},
+    "urgent_guidance": {"checkin_link"},
+}
 
 class TemplateEntry(BaseModel):
     template_key: TemplateKey

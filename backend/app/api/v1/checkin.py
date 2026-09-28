@@ -1,14 +1,17 @@
 """
 Patient daily check-in: form definition and submission.
 
-PROTOTYPE SCOPE — these routes are deliberately unauthenticated because patient
-identity does not exist yet (enrolment links / OTP are a later phase). They expose
-patient names and write clinical values, so they must be gated behind patient auth
-before this reaches real patients.
+A patient arrives through the signed link in their WhatsApp reminder
+(?token=...), which binds the request to one episode and one post-op day. Only
+those submissions message the patient back.
+
+PROTOTYPE SCOPE — the episode picker and ?episode_id= access remain,
+unauthenticated, for the check-in simulator. They expose patient names and write
+clinical values, so they must be gated before this reaches real patients.
 """
 
 from datetime import date
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -17,8 +20,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.services.rules_engine import evaluate_check_in
-from app.services.magic_token import validate_magic_token
-from app.services.whatsapp import send_whatsapp_text
+from app.services.magic_token import InvalidCheckInLink, validate_magic_token
+from app.services.patient_messages import (
+    deliver_message,
+    load_wording,
+    message_values,
+    queue_message,
+    reply_type_for,
+)
 from app.schemas.checkin import (
     CheckInForm,
     CheckInReceipt,
@@ -66,6 +75,21 @@ async def _load_episode(db: AsyncSession, episode_id: UUID):
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Episode not found")
     return row
+
+def _claim_from_link(token: str) -> Dict[str, Any]:
+    try:
+        return validate_magic_token(token)
+    except InvalidCheckInLink as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc))
+
+def _require_todays_link(episode, day: int) -> None:
+    # Once the link's day has passed in the hospital's timezone the missed
+    # check-in sweep judges it, so a late answer must not land on it.
+    if day != episode["post_op_day"]:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="This check-in link was for an earlier day. Please use the link in today's WhatsApp reminder.",
+        )
 
 @router.get("/episodes", response_model=List[EpisodeOption])
 async def list_episodes(db: AsyncSession = Depends(get_db)):
@@ -129,22 +153,20 @@ async def get_checkin_form(
     meta.procedure_parameter specifies.
     """
     if token:
-        token_data = validate_magic_token(token)
-        target_episode_id = token_data["episode_id"]
-        effective_day = token_data["day"]
+        claim = _claim_from_link(token)
+        episode = await _load_episode(db, claim["episode_id"])
+        _require_todays_link(episode, claim["day"])
+        effective_day = claim["day"]
         is_simulated = False
     elif episode_id is not None:
-        target_episode_id = episode_id
-        target_row = await _load_episode(db, target_episode_id)
-        effective_day = day if day is not None else target_row["post_op_day"]
-        is_simulated = day is not None and day != target_row["post_op_day"]
+        episode = await _load_episode(db, episode_id)
+        effective_day = day if day is not None else episode["post_op_day"]
+        is_simulated = day is not None and day != episode["post_op_day"]
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Either episode_id or token is required",
         )
-
-    episode = await _load_episode(db, target_episode_id)
 
     params_result = await db.execute(
         text(
@@ -233,7 +255,7 @@ async def get_checkin_form(
             LIMIT 1
             """
         ),
-        {"episode_id": episode_id, "day": effective_day},
+        {"episode_id": episode["episode_id"], "day": effective_day},
     )
 
     patient_name = episode["patient_name"]
@@ -271,6 +293,20 @@ async def submit_checkin(payload: CheckInSubmit, db: AsyncSession = Depends(get_
             status_code=status.HTTP_409_CONFLICT,
             detail="Episode is no longer active",
         )
+
+    if payload.token is not None:
+        claim = _claim_from_link(payload.token)
+        if claim["episode_id"] != payload.episode_id or claim["day"] != payload.day_after_discharge:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This check-in link is for a different check-in",
+            )
+        if payload.simulated:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A check-in link cannot submit a simulated check-in",
+            )
+        _require_todays_link(episode, claim["day"])
 
     # Reject answers the ruleset does not collect on this day.
     if payload.values:
@@ -411,94 +447,33 @@ async def submit_checkin(payload: CheckInSubmit, db: AsyncSession = Depends(get_
         },
     )
 
-    # For live (non-simulated) submissions, send immediate WhatsApp feedback
-    if not payload.simulated and episode.get("phone_e164"):
-        first_name = (episode["patient_name"] or "").split()[0] or "Patient"
-        phone = episode["phone_e164"]
-        h_name = episode.get("hospital_name") or "St. Mary's Orthopedic Center"
-        day = row["day_after_discharge"]
-
-        if evaluation.tier == "normal":
-            tpl_row = (await db.execute(
-                text("""
-                    SELECT body FROM meta.message_template
-                    WHERE hospital_id = :h AND template_key = 'checkin_confirmation'
-                      AND language_code = :lang AND is_active = true
-                """),
-                {"h": episode["hospital_id"], "lang": episode["language_code"] or "en"},
-            )).mappings().first()
-
-            if tpl_row and tpl_row["body"]:
-                feedback_body = (
-                    tpl_row["body"]
-                    .replace("{patient_first_name}", first_name)
-                    .replace("{post_op_day}", str(day))
-                    .replace("{hospital_name}", h_name)
-                )
-            else:
-                feedback_body = (
-                    f"Thank you {first_name}! ✅\n\n"
-                    f"Your Day {day} recovery check-in has been received. "
-                    f"Your knee recovery indicators are looking good. "
-                    f"Keep up with your rehabilitation exercises!"
-                )
-            msg_type = "checkin_confirmation"
-        else:
-            tpl_row = (await db.execute(
-                text("""
-                    SELECT body FROM meta.message_template
-                    WHERE hospital_id = :h AND template_key = 'urgent_guidance'
-                      AND language_code = :lang AND is_active = true
-                """),
-                {"h": episode["hospital_id"], "lang": episode["language_code"] or "en"},
-            )).mappings().first()
-
-            if tpl_row and tpl_row["body"]:
-                feedback_body = (
-                    tpl_row["body"]
-                    .replace("{patient_first_name}", first_name)
-                    .replace("{post_op_day}", str(day))
-                    .replace("{hospital_name}", h_name)
-                )
-            else:
-                feedback_body = (
-                    f"Thank you {first_name}.\n\n"
-                    f"You reported a symptom that requires clinical review. "
-                    f"Our orthopedic nursing team at {h_name} has been notified and may call you shortly. "
-                    f"If you experience chest pain, severe shortness of breath, or sudden calf swelling, "
-                    f"please call the hospital directly or emergency services immediately."
-                )
-            msg_type = "urgent_guidance"
-
-        wa_result = await send_whatsapp_text(to=phone, body=feedback_body)
-
-        await db.execute(
-            text("""
-                INSERT INTO txn.patient_message (
-                    episode_id, patient_id, hospital_id, message_type,
-                    day_after_discharge, phone_e164, channel, direction,
-                    body, meta_message_id, status, sent_at
-                ) VALUES (
-                    :episode_id, :patient_id, :hospital_id, :msg_type,
-                    :day, :phone, 'whatsapp', 'outbound',
-                    :body, :meta_id, :status,
-                    CASE WHEN :status = 'sent' THEN now() ELSE null END
-                )
-            """),
-            {
-                "episode_id": payload.episode_id,
-                "patient_id": episode["patient_id"],
-                "hospital_id": episode["hospital_id"],
-                "msg_type": msg_type,
-                "day": day,
-                "phone": phone,
-                "body": feedback_body,
-                "meta_id": wa_result.get("message_id"),
-                "status": wa_result.get("status", "sent"),
-            },
+    # Only a submission made through the patient's own link messages them back:
+    # the simulator can pick any episode and must never reach a real phone.
+    reply_id = None
+    if payload.token is not None:
+        reply_type = reply_type_for(evaluation.tier)
+        reply_id = await queue_message(
+            db,
+            episode_id=payload.episode_id,
+            patient_id=episode["patient_id"],
+            hospital_id=episode["hospital_id"],
+            message_type=reply_type,
+            day=row["day_after_discharge"],
+            phone_e164=episode["phone_e164"],
+            wording=await load_wording(db, episode["hospital_id"], reply_type, episode["language_code"]),
+            values=message_values(
+                reply_type, patient_name=episode["patient_name"],
+                hospital_name=episode["hospital_name"], day=row["day_after_discharge"],
+            ),
         )
 
     await db.commit()
+
+    # Sent after the commit, so the check-in is saved whatever Meta does. A
+    # passing failure is left queued for the dispatcher to retry.
+    reply_status = None
+    if reply_id is not None:
+        reply_status = await deliver_message(db, reply_id) or "queued"
 
     return CheckInReceipt(
         check_in_id=row["check_in_id"],
@@ -513,4 +488,5 @@ async def submit_checkin(payload: CheckInSubmit, db: AsyncSession = Depends(get_
         alert_id=alert_id,
         coverage=evaluation.coverage,
         low_confidence=evaluation.is_low_confidence,
+        patient_message_status=reply_status,
     )

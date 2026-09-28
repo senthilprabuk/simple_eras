@@ -43,6 +43,14 @@ async def test_tenant_role_cannot_read_password_hashes():
             await session.execute(text("SELECT hashed_password FROM meta.admin_user"))
 
 
+async def test_tenant_role_cannot_read_the_whatsapp_access_token():
+    async with isolated_session_factory() as session:
+        await scope_to_hospital(session, 1)
+        assert (await session.execute(text("SELECT count(*) FROM meta.hospital_whatsapp"))).scalar_one() == 1
+        with pytest.raises(DBAPIError, match="permission denied"):
+            await session.execute(text("SELECT access_token FROM meta.hospital_whatsapp"))
+
+
 async def test_tenant_role_cannot_rewrite_the_clinical_record():
     async with isolated_session_factory() as session:
         await scope_to_hospital(session, 1)
@@ -62,7 +70,7 @@ async def test_hospital_settings_and_templates_are_tenant_scoped(second_hospital
     # The fixture hospital has seeded templates; another tenant must not see them.
     assert await _scalar_as(second_hospital.hospital_id, "SELECT count(*) FROM meta.hospital") == 1
     assert await _scalar_as(second_hospital.hospital_id, "SELECT count(*) FROM meta.message_template") == 0
-    assert await _scalar_as(1, "SELECT count(*) FROM meta.message_template") == 4
+    assert await _scalar_as(1, "SELECT count(*) FROM meta.message_template") == 5
 
 
 async def test_an_unfiltered_settings_update_changes_only_the_callers_hospital(db, second_hospital):

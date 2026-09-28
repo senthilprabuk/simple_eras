@@ -106,7 +106,7 @@ function CheckInContent() {
       })
       .catch((err: Error) => {
         if (cancelled) return;
-        setFormError(`Unable to load check-in link: ${err.message}. Please use the latest WhatsApp message sent to you.`);
+        setFormError(`${err.message} If this keeps happening, please use the link in your latest WhatsApp reminder.`);
         setLoadedKey(token);
       });
     return () => {
@@ -333,7 +333,6 @@ function CheckInContent() {
               <DoneScreen
                 receipt={receipt}
                 urgent={urgent.length > 0}
-                isTokenMode={isTokenMode}
                 onRestart={() => setReloadNonce((n) => n + 1)}
               />
             )}
@@ -800,12 +799,10 @@ function ReviewStep({
 function DoneScreen({
   receipt,
   urgent,
-  isTokenMode,
   onRestart,
 }: {
   receipt: CheckInReceipt;
   urgent: boolean;
-  isTokenMode?: boolean;
   onRestart: () => void;
 }) {
   return (
@@ -839,17 +836,17 @@ function DoneScreen({
         </div>
       )}
 
-      {isTokenMode && (
+      {/* Only claim what the server reports: a failed or unsent reply says nothing. */}
+      {(receipt.patient_message_status === "sent" || receipt.patient_message_status === "queued") && (
         <div className="w-full bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-4 text-left flex items-start gap-3">
           <span className="material-symbols-outlined text-emerald-600 text-2xl shrink-0 mt-0.5">
             mark_chat_read
           </span>
-          <div>
-            <p className="font-title-sm text-emerald-950 font-semibold">WhatsApp Confirmation Sent</p>
-            <p className="font-body-xs text-emerald-800 mt-0.5 leading-relaxed">
-              A summary confirmation has been sent to your WhatsApp number. Your clinical orthopedic team has received your answers.
-            </p>
-          </div>
+          <p className="font-body-xs text-emerald-800 leading-relaxed">
+            {receipt.patient_message_status === "sent"
+              ? "A WhatsApp message confirming this check-in has been sent to you."
+              : "A WhatsApp message confirming this check-in will follow shortly."}
+          </p>
         </div>
       )}
 

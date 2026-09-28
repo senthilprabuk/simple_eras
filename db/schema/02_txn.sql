@@ -341,9 +341,7 @@ create table txn.patient_message (
     phone_e164           text        not null,
     channel              text        not null default 'whatsapp',
     direction            text        not null default 'outbound',
-    body                 text        not null,
-    magic_token          text,
-    magic_url            text,
+    body                 text        not null,  -- as sent, with any check-in link redacted
     meta_message_id      text,
     status               text        not null default 'queued',
     error_message        text,
@@ -351,6 +349,7 @@ create table txn.patient_message (
     delivered_at         timestamptz,
     read_at              timestamptz,
     created_at           timestamptz not null default now(),
+    attempts             integer     not null default 0,  -- sends tried; a passing failure is retried
 
     constraint patient_message_type_known
         check (message_type in ('checkin_reminder', 'checkin_confirmation', 'urgent_guidance', 'missed_checkin', 'followup_nudge', 'inbound')),
@@ -372,5 +371,9 @@ create index patient_message_by_meta_id
 
 create index patient_message_by_episode
     on txn.patient_message (episode_id, created_at desc);
+
+create index patient_message_queued
+    on txn.patient_message (created_at)
+    where status = 'queued';
 
 commit;

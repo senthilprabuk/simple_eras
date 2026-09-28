@@ -1,17 +1,23 @@
 """
-WhatsApp webhook endpoint for Meta Cloud API.
+WhatsApp webhook for Meta's Cloud API.
 
-Handles:
-1. GET /webhook: Webhook subscription handshake (hub.challenge verification).
-2. POST /webhook: Delivery status receipts (sent -> delivered -> read) and incoming patient messages.
+GET  /webhook  the subscription handshake: Meta echoes hub.challenge back once
+               the verify token matches the platform's or a connected hospital's
+POST /webhook  delivery receipts (sent -> delivered -> read, or failed) for
+               outbound patient messages; inbound patient messages are ignored
+
+Neither call carries a user, so both read across hospitals as the connecting
+role, like the background jobs. A POST is trusted only once its X-Hub-Signature-256
+matches META_APP_SECRET; without that secret every POST is refused.
 """
 
 import hashlib
 import hmac
+import json
 import logging
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,30 +29,22 @@ logger = logging.getLogger("eras.whatsapp.webhook")
 
 router = APIRouter(prefix="/whatsapp", tags=["WhatsApp Webhook"])
 
-STATUS_RANK = {
-    "queued": 0,
-    "sent": 1,
-    "failed": 2,
-    "delivered": 2,
-    "read": 3,
-}
+
+def _signature_is_valid(body_bytes: bytes, signature_header: Optional[str]) -> bool:
+    if not signature_header or not signature_header.startswith("sha256="):
+        return False
+    expected = hmac.new(settings.META_APP_SECRET.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature_header.removeprefix("sha256=").encode("utf-8"), expected.encode("utf-8"))
 
 
-def _verify_meta_signature(body_bytes: bytes, signature_header: Optional[str]) -> bool:
-    """Verify Meta's sha256 HMAC signature when META_APP_SECRET is configured."""
-    if not settings.META_APP_SECRET:
+async def _is_known_verify_token(db: AsyncSession, token: str) -> bool:
+    platform = settings.META_WEBHOOK_VERIFY_TOKEN
+    if platform and hmac.compare_digest(token.encode("utf-8"), platform.encode("utf-8")):
         return True
-    if not signature_header:
-        return False
-    parts = signature_header.split("=")
-    if len(parts) != 2 or parts[0] != "sha256":
-        return False
-    expected = hmac.new(
-        settings.META_APP_SECRET.encode("utf-8"),
-        body_bytes,
-        hashlib.sha256,
-    ).hexdigest()
-    return hmac.compare_digest(parts[1], expected)
+    return (await db.execute(
+        text("SELECT 1 FROM meta.hospital_whatsapp WHERE verify_token = :token AND is_active LIMIT 1"),
+        {"token": token},
+    )).first() is not None
 
 
 @router.get("/webhook")
@@ -54,16 +52,14 @@ async def verify_webhook(
     hub_mode: Optional[str] = Query(None, alias="hub.mode"),
     hub_verify_token: Optional[str] = Query(None, alias="hub.verify_token"),
     hub_challenge: Optional[str] = Query(None, alias="hub.challenge"),
+    db: AsyncSession = Depends(get_db),
 ):
-    """
-    Meta Webhook Verification handshake.
-    Meta hits this GET endpoint with hub.mode, hub.verify_token, and hub.challenge.
-    """
-    if hub_mode == "subscribe" and hub_verify_token == settings.META_WEBHOOK_VERIFY_TOKEN:
+    """Meta's subscription handshake."""
+    if hub_mode == "subscribe" and hub_verify_token and await _is_known_verify_token(db, hub_verify_token):
         logger.info("Meta webhook verification accepted.")
         return PlainTextResponse(content=hub_challenge or "", status_code=status.HTTP_200_OK)
 
-    logger.warning("Meta webhook verification rejected: token mismatch.")
+    logger.warning("Meta webhook verification rejected: unknown verify token.")
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Verification failed")
 
 
@@ -73,42 +69,44 @@ async def process_webhook(
     db: AsyncSession = Depends(get_db),
     x_hub_signature_256: Optional[str] = Header(None),
 ):
-    """
-    Receive webhook event payloads from Meta WhatsApp Cloud API.
-    Updates delivery statuses (sent, delivered, read) for outbound patient messages.
-    """
-    body_bytes = await request.body()
+    """Record delivery receipts for outbound patient messages."""
+    if not settings.META_APP_SECRET:
+        logger.error("WhatsApp webhook call refused: META_APP_SECRET is not set, so its signature cannot be checked.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Webhook signature cannot be verified",
+        )
 
-    if not _verify_meta_signature(body_bytes, x_hub_signature_256):
+    body_bytes = await request.body()
+    if not _signature_is_valid(body_bytes, x_hub_signature_256):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid webhook signature",
         )
 
     try:
-        payload = await request.json()
-    except Exception:
-        return {"ok": True, "processed": 0}
+        payload = json.loads(body_bytes)
+    except ValueError:
+        return {"ok": True, "status_updates": 0}
 
-    if not payload or payload.get("object") != "whatsapp_business_account":
-        return {"ok": True, "processed": 0}
+    if not isinstance(payload, dict) or payload.get("object") != "whatsapp_business_account":
+        return {"ok": True, "status_updates": 0}
 
-    entries = payload.get("entry", [])
     updated_statuses = 0
 
-    for entry in entries:
+    for entry in payload.get("entry", []):
         for change in entry.get("changes", []):
             val = change.get("value", {})
             if val.get("messaging_product") != "whatsapp":
                 continue
 
-            # Process delivery status receipts (sent, delivered, read, failed)
             for st in val.get("statuses", []):
                 wamid = st.get("id")
                 new_status = st.get("status")
                 if not wamid or not new_status:
                     continue
 
+                params: Dict[str, Any] = {"wamid": wamid}
                 if new_status == "delivered":
                     stmt = text("""
                         UPDATE txn.patient_message
@@ -123,25 +121,17 @@ async def process_webhook(
                         WHERE meta_message_id = :wamid AND status IN ('queued', 'sent', 'delivered')
                     """)
                 elif new_status == "failed":
-                    err_msg = None
-                    errors = st.get("errors", [])
-                    if errors:
-                        err_msg = errors[0].get("message") or errors[0].get("title")
+                    errors = st.get("errors") or [{}]
+                    params["err"] = errors[0].get("message") or errors[0].get("title") or "Meta delivery failed"
                     stmt = text("""
                         UPDATE txn.patient_message
                         SET status = 'failed', error_message = :err
                         WHERE meta_message_id = :wamid AND status IN ('queued', 'sent')
                     """)
                 else:
-                    stmt = None
+                    continue
 
-                if stmt is not None:
-                    params: Dict[str, Any] = {"wamid": wamid}
-                    if new_status == "failed":
-                        params["err"] = err_msg or "Meta delivery failed"
-                    res = await db.execute(stmt, params)
-                    if res.rowcount > 0:
-                        updated_statuses += res.rowcount
+                updated_statuses += max((await db.execute(stmt, params)).rowcount, 0)
 
     await db.commit()
     return {"ok": True, "status_updates": updated_statuses}

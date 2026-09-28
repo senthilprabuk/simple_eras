@@ -214,6 +214,12 @@ The per-step `verify_step*.py` scripts were superseded by the pytest suite in `b
 3. `NOTIFICATION_PROVIDER` defaults to `disabled`: overdue alerts are escalated and their
    notifications queued, but nothing is sent, and the dashboard says so. Set it to `log` in
    development to write each notification to the application log instead.
+   `WHATSAPP_PROVIDER` works the same way for patient reminders and check-in replies:
+   `disabled` leaves them queued with a warning, `log` writes one line per message (no
+   patient details), and `meta` sends approved templates through Meta. With `meta`, set
+   `META_APP_SECRET` (the webhook refuses every call without it), `FRONTEND_BASE_URL` and
+   `PUBLIC_API_BASE_URL`, and approve each message in Meta as a template named after its
+   key on the templates page, placeholders numbered `{{1}}`, `{{2}}`… in the order they appear.
 4. Optionally copy `frontend/.env.example` to `frontend/.env.local` to point the dashboard at
    a backend other than `http://localhost:8000`.
 

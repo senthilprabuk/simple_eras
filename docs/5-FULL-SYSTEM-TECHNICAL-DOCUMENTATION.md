@@ -316,8 +316,14 @@ graph LR
 | **Templates**| `PUT` | `/api/v1/templates/{key}/{lang}`| `superadmin` | Updates template body text (validates placeholder variables). |
 | **Reports** | `GET` | `/api/v1/reports` | Bearer JWT | Aggregates 12-week clinical metrics, SLA adherence, and outcomes. |
 | **Check-in** | `GET` | `/api/v1/checkin/episodes` | Public (Proto)| Active episodes available for patient check-in simulator. |
-| **Check-in** | `GET` | `/api/v1/checkin/form` | Public (Proto)| Day-appropriate check-in questions based on approved ruleset window.|
-| **Check-in** | `POST` | `/api/v1/checkin` | Public (Proto)| Persists check-in; prevents duplicates via idempotency; supersedes older entries.|
+| **Check-in** | `GET` | `/api/v1/checkin/form` | Check-in link, or Public (Proto) | Day-appropriate check-in questions. `?token=` (the WhatsApp link) is bound to one episode and today's post-op day; `?episode_id=` serves the simulator.|
+| **Check-in** | `POST` | `/api/v1/checkin` | Check-in link, or Public (Proto) | Persists check-in; prevents duplicates via idempotency; supersedes older entries. Only a submission carrying the patient's link gets a WhatsApp reply.|
+| **WhatsApp** | `GET` | `/api/v1/whatsapp/account` | Bearer JWT | The hospital's WhatsApp number and click-to-chat QR code. Access token masked; verify token shown to superadmins only. |
+| **WhatsApp** | `POST` | `/api/v1/whatsapp/account` | `superadmin` | Connects or updates the account, checked against Meta when `WHATSAPP_PROVIDER=meta`. |
+| **WhatsApp** | `DELETE`| `/api/v1/whatsapp/account` | `superadmin` | Disconnects the account. |
+| **WhatsApp** | `POST` | `/api/v1/whatsapp/test` | `superadmin` | Sends free text from the hospital's own number. |
+| **WhatsApp** | `GET` | `/api/v1/whatsapp/webhook` | Verify token | Meta's subscription handshake; accepts `META_WEBHOOK_VERIFY_TOKEN` or a connected hospital's verify token. |
+| **WhatsApp** | `POST` | `/api/v1/whatsapp/webhook` | Meta signature | Delivery receipts. Refused unless `X-Hub-Signature-256` matches `META_APP_SECRET`. |
 
 ---
 
@@ -366,7 +372,8 @@ Pain perception expectations change dramatically across the recovery timeline. T
 | **Optimistic UI False Acknowledgment** | Frontend eliminates local optimistic state overrides in `RiskQueueTable.tsx`. Acknowledged badges only render upon confirmed HTTP 200 receipt. | Verified in Vitest & QA |
 | **Fabricated Clinical Telemetry** | Removed all static hardcoded vitals. When direct vitals telemetry feeds are absent, UI honestly displays structured WhatsApp self-reported cards. | Frontend Drawer verified |
 | **SQL / Search Injection** | All dynamic searches use SQLAlchemy parameterized statements. Search queries escape wildcards (`%` and `_`) to treat input literally. | `backend/tests/test_patients.py` |
-| **Privilege Escalation** | Sensitive admin endpoints (`/settings`, `/clinicians`, `/templates`) enforce `RoleChecker(["superadmin"])`. Self-deactivation is blocked. | Tested in `test_clinicians.py` |
+| **Privilege Escalation** | Writes to hospital settings, clinicians, templates and the WhatsApp account depend on `require_superadmin` (`app/core/security.py`). Self-deactivation is blocked. | `test_clinicians.py`, `test_templates.py`, `test_whatsapp_account.py` |
+| **Patient Messaging** | Messages are recorded as queued and sent after the deciding transaction commits, so a rollback never hides a sent message. Check-in links are minted at send time and never stored or logged. `WHATSAPP_PROVIDER=disabled` leaves messages queued rather than reporting them sent. The Meta access token is unreadable by `eras_app`. | `test_daily_dispatch.py`, `test_whatsapp_checkin.py`, `test_security.py` |
 | **Concurrent Check-In Collisions** | Check-in submissions acquire row locks (`FOR UPDATE`) on `txn.patient_episode`. Same-day submissions supersede older entries deterministically. | `backend/app/api/v1/checkin.py` |
 
 ---
@@ -429,16 +436,19 @@ npm test -- --run
 
 #### Backend Configuration (`backend/.env`):
 ```ini
-ENVIRONMENT=production
 DATABASE_URL=postgresql://user:password@ep-sample-pooler.ap-southeast-1.aws.neon.tech/simpleeras?sslmode=require
-ASYNC_DATABASE_URL=postgresql+asyncpg://user:password@ep-sample-pooler.ap-southeast-1.aws.neon.tech/simpleeras?ssl=require
-JWT_SECRET=super-secure-production-random-secret-key-at-least-32-chars-long
+JWT_SECRET_KEY=<at least 32 random characters>
 JWT_ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=720
-CORS_ORIGINS=["http://localhost:3000","https://eras.stmarys.org"]
-ESCALATION_SWEEP_SECONDS=60
-NOTIFICATION_DISPATCH_SECONDS=30
+CORS_ORIGINS=http://localhost:3000,https://eras.example-hospital.org
+ESCALATION_SWEEP_INTERVAL_SECS=60
+NOTIFICATION_DISPATCH_INTERVAL_SECS=30
 NOTIFICATION_PROVIDER=disabled
+# Patient WhatsApp messages: disabled | log | meta
+WHATSAPP_PROVIDER=disabled
+META_APP_SECRET=<Meta app secret; the webhook refuses every call without it>
+FRONTEND_BASE_URL=https://eras.example-hospital.org
+PUBLIC_API_BASE_URL=https://api.eras.example-hospital.org
 ```
 
 #### Frontend Configuration (`frontend/.env.local`):

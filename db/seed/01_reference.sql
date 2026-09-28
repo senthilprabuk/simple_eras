@@ -203,7 +203,9 @@ cross join (values
     ('missed_checkin',
      'Hello {patient_first_name}, we have not received your check-in yet. Please complete it now so {hospital_name} can follow your recovery: {checkin_link}'),
     ('urgent_guidance',
-     '{patient_first_name}, you reported a symptom that needs attention today. Please call {hospital_name} now. If you have chest pain or severe breathlessness, call emergency services immediately.')
+     '{patient_first_name}, you reported a symptom that needs attention today. Please call {hospital_name} now. If you have chest pain or severe breathlessness, call emergency services immediately.'),
+    ('checkin_confirmation',
+     'Thank you {patient_first_name}. Your day {post_op_day} check-in has reached {hospital_name}.')
 ) as t(template_key, body)
 where h.hospital_code = 'CBE-01'
 on conflict do nothing;

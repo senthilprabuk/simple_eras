@@ -44,11 +44,13 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     logger.info(
         "Started: escalation sweep every %ss, notification dispatch every %ss, "
-        "missed check-in sweep every %ss, daily WhatsApp dispatch every %ss (provider: %s). CORS origins: %s",
+        "missed check-in sweep every %ss, patient WhatsApp dispatch every %ss "
+        "(notification provider: %s, WhatsApp provider: %s). CORS origins: %s",
         settings.ESCALATION_SWEEP_INTERVAL_SECS,
         settings.NOTIFICATION_DISPATCH_INTERVAL_SECS,
         settings.MISSED_CHECKIN_SWEEP_INTERVAL_SECS,
         settings.DAILY_DISPATCH_INTERVAL_SECS,
+        settings.NOTIFICATION_PROVIDER,
         settings.WHATSAPP_PROVIDER,
         settings.cors_origins_list,
     )
