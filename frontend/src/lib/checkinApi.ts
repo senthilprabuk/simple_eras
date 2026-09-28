@@ -50,6 +50,8 @@ export interface EpisodeContext {
   first_name: string;
   mrn: string | null;
   hospital_name: string;
+  /** Dialled when the patient reports an emergency symptom; null until the hospital sets one. */
+  hospital_emergency_phone: string | null;
   procedure_code: string;
   actual_post_op_day: number;
   monitoring_ends_on: string;
@@ -80,12 +82,22 @@ export interface CheckInReceipt {
 export type AnswerValue = number | boolean | string | null;
 export type Answers = Record<string, AnswerValue>;
 
-async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`);
+/** The server answered with an error; a network failure is a TypeError from fetch instead. */
+export class CheckInRequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
+async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE_URL}${path}`, init);
   if (!res.ok) {
     // A check-in link's detail (expired, from an earlier day) is written for the patient.
     const body = await res.json().catch(() => ({}));
-    throw new Error(typeof body.detail === "string" ? body.detail : `${res.status} ${res.statusText}`);
+    throw new CheckInRequestError(
+      typeof body.detail === "string" ? body.detail : `${res.status} ${res.statusText}`,
+      res.status
+    );
   }
   return res.json();
 }
@@ -99,8 +111,9 @@ export function fetchCheckInForm(episodeId: string, day?: number): Promise<Check
   return getJson<CheckInForm>(`/api/v1/checkin/form?episode_id=${episodeId}${query}`);
 }
 
+/** The token goes in a header, not the URL, so no server or proxy access log records it. */
 export function fetchCheckInFormByToken(token: string): Promise<CheckInForm> {
-  return getJson<CheckInForm>(`/api/v1/checkin/form?token=${encodeURIComponent(token)}`);
+  return getJson<CheckInForm>("/api/v1/checkin/form", { headers: { "X-Checkin-Token": token } });
 }
 
 export async function submitCheckIn(input: {

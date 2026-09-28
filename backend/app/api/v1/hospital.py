@@ -12,7 +12,8 @@ router = APIRouter(prefix="/hospital", tags=["Hospital"])
 
 async def _profile(db: AsyncSession, hospital_id: int) -> HospitalProfile:
     hospital = (await db.execute(text("""
-        SELECT hospital_id, hospital_code, hospital_name, city, timezone, ack_window_secs, is_active
+        SELECT hospital_id, hospital_code, hospital_name, city, timezone, ack_window_secs,
+               emergency_phone_e164, is_active
         FROM meta.hospital WHERE hospital_id = :h_id
     """), {"h_id": hospital_id})).mappings().one()
 
@@ -56,7 +57,8 @@ async def update_hospital(
 ):
     """
     Change the hospital's operational settings. The acknowledgement window drives
-    escalation, and the timezone decides what "today" and post-op day mean.
+    escalation, the timezone decides what "today" and post-op day mean, and the
+    emergency number is what a patient reporting an emergency symptom is told to call.
     """
     fields = changes.model_dump(exclude_unset=True)
     if not fields:
@@ -68,6 +70,18 @@ async def update_hospital(
         )).scalar_one()
         if not known:
             raise HTTPException(422, detail=f"Unknown timezone {fields['timezone']!r}; use an IANA name such as Asia/Kolkata")
+
+    if "emergency_phone_e164" in fields and fields["emergency_phone_e164"] is None:
+        in_use = (await db.execute(text("""
+            SELECT template_key FROM meta.message_template
+            WHERE hospital_id = :h_id AND is_active AND body LIKE '%{hospital_phone}%'
+            ORDER BY template_key
+        """), {"h_id": current_admin.hospital_id})).scalars().all()
+        if in_use:
+            raise HTTPException(422, detail=(
+                "The emergency number is used by {hospital_phone} in " + ", ".join(in_use)
+                + "; change that wording before clearing the number"
+            ))
 
     # Column names come from the model's own field list, never from input.
     assignments = ", ".join(f"{column} = :{column}" for column in fields)

@@ -276,8 +276,9 @@ therefore needs `CREATEDB`, which `neondb_owner` has on Neon.
   npm run dev -- --port 3000
   ```
   Dashboard: `http://localhost:3000`, which redirects to `/login`. Demo clinicians created by
-  `seed_demo.py` share the password `password123`. The patient check-in prototype is at
-  `/checkin`; its API is unauthenticated until patient sign-in exists.
+  `seed_demo.py` share the password `password123`. A patient opens their check-in from
+  the link in their WhatsApp reminder. The `/checkin` simulator, which picks any patient with no
+  sign-in, answers only with `CHECKIN_SIMULATOR_ENABLED=true`, for demos on seeded data.
 
 ### 6.5 Tenant Isolation
 Every request made by a signed-in clinician runs its queries as the `eras_app` role with

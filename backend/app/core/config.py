@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     PUBLIC_API_BASE_URL: str = "http://localhost:8000"
     DAILY_DISPATCH_INTERVAL_SECS: int = 60
 
+    # The check-in simulator: the /checkin episode picker and ?episode_id= access.
+    # It has no sign-in and lists every active patient, so it is for demos on seeded
+    # data only. Off, a check-in needs the link from the patient's WhatsApp reminder.
+    CHECKIN_SIMULATOR_ENABLED: bool = False
+
     LOG_LEVEL: str = "INFO"
 
     # CORS

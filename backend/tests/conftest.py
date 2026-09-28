@@ -85,6 +85,12 @@ async def test_database():
 
 
 @pytest.fixture(autouse=True)
+def checkin_simulator_on(monkeypatch):
+    """Most tests submit check-ins through the simulator; the tests of it being off turn it off."""
+    monkeypatch.setattr(settings, "CHECKIN_SIMULATOR_ENABLED", True)
+
+
+@pytest.fixture(autouse=True)
 def reset_login_throttle():
     login_throttle.clear()
     yield

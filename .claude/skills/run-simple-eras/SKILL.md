@@ -17,6 +17,8 @@ and the Edge that ships with Windows. All paths are relative to the repository r
 - Node 20+ (Node 22+ for the driver's built-in WebSocket).
 - Microsoft Edge or Chrome. The driver finds Edge in `C:/Program Files (x86)/Microsoft/Edge/`; set `BROWSER=<path>` otherwise.
 - `backend/.env` with at least `DATABASE_URL` (Neon pooler URL) and `JWT_SECRET_KEY` (32+ characters); see `backend/.env.example`.
+  Add `CHECKIN_SIMULATOR_ENABLED=true` to use the `/checkin` episode picker on demo data; the flows
+  below use check-in links and work without it.
 
 ## Setup
 
@@ -169,8 +171,14 @@ needs CREATEDB, which `neondb_owner` has), runs, and drops it.
   says the WhatsApp message "will follow shortly", and the backend logs a waiting-messages
   warning every minute. Put `WHATSAPP_PROVIDER=log` in `backend/.env` and restart to see them
   "sent" in the log.
-- **Check-in link tokens appear in the backend and Next.js access logs**, because the token is in
-  the page and API URLs. The driver prints `token=…` instead.
+- **Check-in links carry the token after `#`** (`/checkin#token=...`), which the browser never sends
+  to a server, and the page sends it to the API in an `X-Checkin-Token` header. Only older
+  `?token=` links reach a request log, where the backend redacts them. The driver prints `token=…`.
+- **With `CHECKIN_SIMULATOR_ENABLED` unset, `/checkin` without a link shows "Open your check-in from
+  WhatsApp"**, and `/api/v1/checkin/episodes` answers 404. That is the safe default, not a fault.
+- **Labels styled in capitals are capitals to `wait-for`.** The driver matches `innerText`, which
+  applies CSS `text-transform`: the hospital page's "Emergency number" label reads "EMERGENCY
+  NUMBER". Wait on the value underneath instead.
 - **`npm ci` warns `unrs-resolver@... (postinstall ...)` is "not yet covered by allowScripts"**
   (npm 11 skips unapproved install scripts). Harmless here: the dev server, vitest, tsc and
   eslint all work without it.

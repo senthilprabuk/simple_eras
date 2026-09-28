@@ -349,6 +349,7 @@ export interface HospitalProfile {
   city: string | null;
   timezone: string;
   ack_window_secs: number;
+  emergency_phone_e164: string | null;
   is_active: boolean;
   procedures: {
     procedure_code: string;
@@ -371,6 +372,8 @@ export interface HospitalUpdate {
   city?: string;
   timezone?: string;
   ack_window_secs?: number;
+  /** An empty string clears it. */
+  emergency_phone_e164?: string;
 }
 
 export function fetchHospital(): Promise<HospitalProfile> {

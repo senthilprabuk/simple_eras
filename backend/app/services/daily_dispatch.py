@@ -34,6 +34,7 @@ DUE_REMINDERS_SQL = text("""
             p.phone_e164,
             p.language_code,
             h.hospital_name,
+            h.emergency_phone_e164,
             e.checkin_window_start,
             e.checkin_window_end,
             (now() AT TIME ZONE h.timezone)::date AS hospital_today,
@@ -53,6 +54,7 @@ DUE_REMINDERS_SQL = text("""
         s.phone_e164,
         s.language_code,
         s.hospital_name,
+        s.emergency_phone_e164,
         s.post_op_day
     FROM patient_status s
     WHERE s.post_op_day >= 0
@@ -115,8 +117,8 @@ async def run_daily_checkin_dispatch(session_factory=None) -> Dict[str, Any]:
                 phone_e164=r["phone_e164"],
                 wording=await load_wording(session, r["hospital_id"], "checkin_reminder", r["language_code"]),
                 values=message_values(
-                    "checkin_reminder", patient_name=r["patient_name"],
-                    hospital_name=r["hospital_name"], day=r["post_op_day"],
+                    "checkin_reminder", patient_name=r["patient_name"], hospital_name=r["hospital_name"],
+                    day=r["post_op_day"], hospital_phone=r["emergency_phone_e164"],
                 ),
             )
             queued += message_id is not None

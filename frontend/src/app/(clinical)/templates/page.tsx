@@ -48,6 +48,7 @@ function Editor({
     hospital_name: session.hospitalName,
     post_op_day: "4",
     checkin_link: "https://example.org/c/7f3a",
+    hospital_phone: "+91 XXXXX XXXXX",
   });
 
   const insert = (name: string) => {

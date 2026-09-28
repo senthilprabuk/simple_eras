@@ -307,7 +307,7 @@ graph LR
 | **Rulesets** | `GET` | `/api/v1/rulesets` | Bearer JWT | Lists approved rulesets for the hospital's offered procedures. |
 | **Rulesets** | `GET` | `/api/v1/rulesets/{id}` | Bearer JWT | Detailed ruleset schema with collection/scoring windows & scoring JSON. |
 | **Hospital** | `GET` | `/api/v1/hospital/profile` | Bearer JWT | Current hospital profile, configuration, and offered procedures. |
-| **Hospital** | `PATCH`| `/api/v1/hospital/settings`| `superadmin` | Updates hospital SLA window (`ack_window_secs`), timezone, or name. |
+| **Hospital** | `PATCH`| `/api/v1/hospital/settings`| `superadmin` | Updates hospital SLA window (`ack_window_secs`), timezone, name, or the emergency number patients are told to call (`emergency_phone_e164`). |
 | **Clinicians**| `GET` | `/api/v1/clinicians` | Bearer JWT | Returns clinician roster without exposing password hashes. |
 | **Clinicians**| `POST` | `/api/v1/clinicians` | `superadmin` | Creates a new clinician account (enforces password strength & email format).|
 | **Clinicians**| `PATCH`| `/api/v1/clinicians/{id}` | `superadmin` | Activates or deactivates clinician (prevents self-deactivation). |
@@ -315,9 +315,9 @@ graph LR
 | **Templates**| `GET` | `/api/v1/templates` | Bearer JWT | WhatsApp message templates across all supported languages. |
 | **Templates**| `PUT` | `/api/v1/templates/{key}/{lang}`| `superadmin` | Updates template body text (validates placeholder variables). |
 | **Reports** | `GET` | `/api/v1/reports` | Bearer JWT | Aggregates 12-week clinical metrics, SLA adherence, and outcomes. |
-| **Check-in** | `GET` | `/api/v1/checkin/episodes` | Public (Proto)| Active episodes available for patient check-in simulator. |
-| **Check-in** | `GET` | `/api/v1/checkin/form` | Check-in link, or Public (Proto) | Day-appropriate check-in questions. `?token=` (the WhatsApp link) is bound to one episode and today's post-op day; `?episode_id=` serves the simulator.|
-| **Check-in** | `POST` | `/api/v1/checkin` | Check-in link, or Public (Proto) | Persists check-in; prevents duplicates via idempotency; supersedes older entries. Only a submission carrying the patient's link gets a WhatsApp reply.|
+| **Check-in** | `GET` | `/api/v1/checkin/episodes` | Simulator only | Active episodes for the check-in simulator. 404 unless `CHECKIN_SIMULATOR_ENABLED`. |
+| **Check-in** | `GET` | `/api/v1/checkin/form` | Check-in link | Day-appropriate check-in questions, and the hospital's emergency number. The link token comes in the `X-Checkin-Token` header (older links: `?token=`) and is bound to one episode and today's post-op day; `?episode_id=` serves the simulator when enabled.|
+| **Check-in** | `POST` | `/api/v1/checkin` | Check-in link | Persists check-in; prevents duplicates via idempotency; supersedes older entries. Without the simulator, a submission needs the patient's link; only those get a WhatsApp reply.|
 | **WhatsApp** | `GET` | `/api/v1/whatsapp/account` | Bearer JWT | The hospital's WhatsApp number and click-to-chat QR code. Access token masked; verify token shown to superadmins only. |
 | **WhatsApp** | `POST` | `/api/v1/whatsapp/account` | `superadmin` | Connects or updates the account, checked against Meta when `WHATSAPP_PROVIDER=meta`. |
 | **WhatsApp** | `DELETE`| `/api/v1/whatsapp/account` | `superadmin` | Disconnects the account. |

@@ -2,6 +2,8 @@ from datetime import date
 from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator
 
+from app.schemas.enrollment import OptionalPhone
+
 class OfferedProcedure(BaseModel):
     procedure_code: str
     procedure_name: str
@@ -23,6 +25,7 @@ class HospitalProfile(BaseModel):
     city: Optional[str] = None
     timezone: str
     ack_window_secs: int
+    emergency_phone_e164: Optional[str] = None
     is_active: bool
     procedures: List[OfferedProcedure]
     stats: HospitalStats
@@ -33,6 +36,8 @@ class HospitalUpdate(BaseModel):
     city: Optional[str] = Field(None, max_length=100)
     timezone: Optional[str] = Field(None, min_length=1, max_length=64)
     ack_window_secs: Optional[int] = Field(None, ge=60, le=7200)
+    # Dialled from the check-in when a patient reports an emergency symptom; blank clears it.
+    emergency_phone_e164: OptionalPhone = None
 
     @field_validator("hospital_name")
     @classmethod

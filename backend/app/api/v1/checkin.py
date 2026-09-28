@@ -1,23 +1,25 @@
 """
 Patient daily check-in: form definition and submission.
 
-A patient arrives through the signed link in their WhatsApp reminder
-(?token=...), which binds the request to one episode and one post-op day. Only
+A patient arrives through the signed link in their WhatsApp reminder, which
+binds the request to one episode and one post-op day. The page sends the token in
+the X-Checkin-Token header (?token= is still accepted from older links). Only
 those submissions message the patient back.
 
-PROTOTYPE SCOPE — the episode picker and ?episode_id= access remain,
-unauthenticated, for the check-in simulator. They expose patient names and write
-clinical values, so they must be gated before this reaches real patients.
+The check-in simulator (the episode picker and ?episode_id= access) has no
+sign-in and lists every active patient, so it answers only when
+CHECKIN_SIMULATOR_ENABLED is set, which is for demos on seeded data.
 """
 
 from datetime import date
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.db.session import get_db
 from app.services.rules_engine import evaluate_check_in
 from app.services.magic_token import InvalidCheckInLink, validate_magic_token
@@ -58,6 +60,7 @@ EPISODE_SQL = f"""
         p.language_code,
         p.mrn,
         h.hospital_name,
+        h.emergency_phone_e164,
         sp.procedure_code,
         {POST_OP_DAY_SQL} AS post_op_day
     FROM txn.patient_episode e
@@ -82,6 +85,14 @@ def _claim_from_link(token: str) -> Dict[str, Any]:
     except InvalidCheckInLink as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc))
 
+def _require_simulator() -> None:
+    if not settings.CHECKIN_SIMULATOR_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="The check-in simulator is switched off on this server. "
+                   "Patients open their check-in from the link in their WhatsApp reminder.",
+        )
+
 def _require_todays_link(episode, day: int) -> None:
     # Once the link's day has passed in the hospital's timezone the missed
     # check-in sweep judges it, so a late answer must not land on it.
@@ -94,6 +105,7 @@ def _require_todays_link(episode, day: int) -> None:
 @router.get("/episodes", response_model=List[EpisodeOption])
 async def list_episodes(db: AsyncSession = Depends(get_db)):
     """Active episodes available to the check-in simulator, with today's submission state."""
+    _require_simulator()
     stmt = text(
         EPISODE_SQL
         + f"""
@@ -135,7 +147,8 @@ async def list_episodes(db: AsyncSession = Depends(get_db)):
 @router.get("/form", response_model=CheckInForm)
 async def get_checkin_form(
     episode_id: Optional[UUID] = Query(None, description="Episode to build the form for"),
-    token: Optional[str] = Query(None, description="Magic token from patient's WhatsApp message"),
+    token: Optional[str] = Query(None, description="Check-in link token, from links sent before X-Checkin-Token"),
+    x_checkin_token: Optional[str] = Header(None, description="Check-in link token from the patient's WhatsApp link"),
     day: Optional[int] = Query(
         None,
         ge=0,
@@ -146,19 +159,21 @@ async def get_checkin_form(
 ):
     """
     Build the day-appropriate check-in form from the episode's approved ruleset.
-    Accepts either token (from patient WhatsApp link) or episode_id (for simulator).
+    Accepts the patient's link token or, with the simulator on, an episode_id.
 
     Only parameters whose collection window (collect_from_day..collect_to_day)
     contains the effective day are returned, ordered and grouped exactly as
     meta.procedure_parameter specifies.
     """
-    if token:
-        claim = _claim_from_link(token)
+    link_token = x_checkin_token or token
+    if link_token:
+        claim = _claim_from_link(link_token)
         episode = await _load_episode(db, claim["episode_id"])
         _require_todays_link(episode, claim["day"])
         effective_day = claim["day"]
         is_simulated = False
     elif episode_id is not None:
+        _require_simulator()
         episode = await _load_episode(db, episode_id)
         effective_day = day if day is not None else episode["post_op_day"]
         is_simulated = day is not None and day != episode["post_op_day"]
@@ -266,6 +281,7 @@ async def get_checkin_form(
             first_name=patient_name.split(" ")[0],
             mrn=episode["mrn"],
             hospital_name=episode["hospital_name"],
+            hospital_emergency_phone=episode["emergency_phone_e164"],
             procedure_code=episode["procedure_code"],
             actual_post_op_day=episode["post_op_day"],
             monitoring_ends_on=episode["monitoring_ends_on"],
@@ -287,6 +303,11 @@ async def submit_checkin(payload: CheckInSubmit, db: AsyncSession = Depends(get_
     Replaying the same idempotency_key returns the original submission instead of
     creating a duplicate.
     """
+    if payload.token is None and not settings.CHECKIN_SIMULATOR_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="A check-in needs the link from the patient's WhatsApp reminder",
+        )
     episode = await _load_episode(db, payload.episode_id)
     if episode["status"] != "active":
         raise HTTPException(
@@ -462,8 +483,8 @@ async def submit_checkin(payload: CheckInSubmit, db: AsyncSession = Depends(get_
             phone_e164=episode["phone_e164"],
             wording=await load_wording(db, episode["hospital_id"], reply_type, episode["language_code"]),
             values=message_values(
-                reply_type, patient_name=episode["patient_name"],
-                hospital_name=episode["hospital_name"], day=row["day_after_discharge"],
+                reply_type, patient_name=episode["patient_name"], hospital_name=episode["hospital_name"],
+                day=row["day_after_discharge"], hospital_phone=episode["emergency_phone_e164"],
             ),
         )
 

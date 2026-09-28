@@ -112,7 +112,8 @@ async def test_with_meta_the_reminder_is_the_approved_template_with_a_working_li
         p["text"] for p in payload["template"]["components"][0]["parameters"]
     ]
     assert (first_name, hospital_name) == ("Patient", "Hospital RM-META")
-    assert link.startswith(f"{settings.FRONTEND_BASE_URL}/checkin?token=")
+    # After "#", so the token is never sent to (or logged by) any server.
+    assert link.startswith(f"{settings.FRONTEND_BASE_URL}/checkin#token=")
     assert validate_magic_token(link.split("token=")[1]) == {"episode_id": hospital.episode_id, "day": int(day)}
 
     [reminder] = await _reminders(db, hospital.episode_id)
@@ -200,3 +201,24 @@ async def test_without_wording_the_gap_is_recorded_once(db):
     [reminder] = await _reminders(db, hospital.episode_id)
     assert reminder["status"] == "failed"
     assert "No active checkin_reminder wording" in reminder["error_message"]
+
+
+async def test_a_reminder_can_give_the_hospitals_emergency_number(db):
+    hospital = await create_hospital(db, "RM-PHONE")
+    await db.execute(
+        text("UPDATE txn.patient_episode SET checkin_window_start = :s, checkin_window_end = :e WHERE episode_id = :ep"),
+        {"s": time(0, 0), "e": time(23, 59, 59), "ep": hospital.episode_id},
+    )
+    await db.execute(text("UPDATE meta.hospital SET emergency_phone_e164 = '+914225550100' WHERE hospital_id = :h"),
+                     {"h": hospital.hospital_id})
+    await db.execute(text("""
+        INSERT INTO meta.message_template (hospital_id, template_key, language_code, body)
+        VALUES (:h, 'checkin_reminder', 'en', 'Day {post_op_day}: {checkin_link} Worried? Call {hospital_phone}.')
+    """), {"h": hospital.hospital_id})
+    await db.commit()
+
+    await run_daily_checkin_dispatch(isolated_session_factory)
+
+    [reminder] = await _reminders(db, hospital.episode_id)
+    assert reminder["status"] == "sent"
+    assert reminder["body"].endswith("[check-in link] Worried? Call +914225550100.")

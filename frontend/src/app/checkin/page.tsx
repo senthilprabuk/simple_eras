@@ -1,9 +1,9 @@
 "use client";
 
-import React, { Suspense, useState, useEffect, useMemo } from "react";
-import { useSearchParams } from "next/navigation";
+import React, { Suspense, useState, useEffect, useMemo, useSyncExternalStore } from "react";
 import {
   EpisodeOption,
+  EpisodeContext,
   CheckInForm,
   CheckInReceipt,
   FormParameter,
@@ -13,6 +13,7 @@ import {
   fetchEpisodes,
   fetchCheckInForm,
   fetchCheckInFormByToken,
+  CheckInRequestError,
   submitCheckIn,
   sectionTitle,
   SECTION_META,
@@ -57,13 +58,51 @@ function newIdempotencyKey(): string {
   return `checkin-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+/**
+ * The token from the patient's WhatsApp link. It travels after "#", which browsers never
+ * send to a server, so no server or proxy log records it. Links sent before that carry
+ * ?token=; the page moves it behind "#", so a reload keeps working without sending it.
+ */
+function readLinkToken(): string | null {
+  return (
+    new URLSearchParams(window.location.hash.slice(1)).get("token") ??
+    new URLSearchParams(window.location.search).get("token")
+  );
+}
+
+// Opening a link on an already-open check-in page changes only the "#" part, which
+// does not reload the page.
+function subscribeToAddress(onChange: () => void) {
+  window.addEventListener("hashchange", onChange);
+  return () => window.removeEventListener("hashchange", onChange);
+}
+
+/** undefined until the browser has read the address; the server never sees one. */
+function useLinkToken(): string | null | undefined {
+  const token = useSyncExternalStore(subscribeToAddress, readLinkToken, () => undefined);
+  useEffect(() => {
+    const fromQuery = new URLSearchParams(window.location.search).get("token");
+    if (fromQuery && !window.location.hash) {
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `${window.location.pathname}#token=${encodeURIComponent(fromQuery)}`
+      );
+    }
+  }, []);
+  return token;
+}
+
 function CheckInContent() {
-  const searchParams = useSearchParams();
-  const token = searchParams.get("token");
+  const linkToken = useLinkToken();
+  const addressRead = linkToken !== undefined;
+  const token = linkToken ?? null;
   const isTokenMode = Boolean(token);
 
   const [episodes, setEpisodes] = useState<EpisodeOption[]>([]);
   const [episodesError, setEpisodesError] = useState<string | null>(null);
+  // The server has the simulator off, so without a link there is nothing to show but where to find one.
+  const [simulatorOff, setSimulatorOff] = useState(false);
   const [chosenKey, setChosenKey] = useState<string>("");
   const [form, setForm] = useState<CheckInForm | null>(null);
   const [loadedKey, setLoadedKey] = useState<string>("");
@@ -136,7 +175,7 @@ function CheckInContent() {
 
   // When in simulator mode (no token), load episodes
   useEffect(() => {
-    if (isTokenMode) return;
+    if (!addressRead || isTokenMode) return;
     let cancelled = false;
     fetchEpisodes()
       .then((list) => {
@@ -144,13 +183,19 @@ function CheckInContent() {
         setEpisodes(list);
         if (list.length === 0) setEpisodesError("No active episodes found in the database.");
       })
-      .catch((err) => {
-        if (!cancelled) setEpisodesError(`Could not reach the backend: ${err.message}`);
+      .catch((err: Error) => {
+        if (cancelled) return;
+        if (err instanceof CheckInRequestError && err.status === 404) {
+          setSimulatorOff(true);
+          return;
+        }
+        // fetch throws TypeError when the server is unreachable; otherwise the server said why.
+        setEpisodesError(err instanceof TypeError ? `Could not reach the backend: ${err.message}` : err.message);
       });
     return () => {
       cancelled = true;
     };
-  }, [isTokenMode]);
+  }, [addressRead, isTokenMode]);
 
   // Selection is derived for simulator mode
   const selected = useMemo(() => {
@@ -194,7 +239,8 @@ function CheckInContent() {
     : (selected !== undefined && loadedKey === selected.key);
   const activeForm = ready && !formError ? form : null;
   const errorMessage = isTokenMode ? formError : (episodesError ?? (ready ? formError : null));
-  const loading = !errorMessage && !activeForm;
+  const showSimulatorOff = simulatorOff && !isTokenMode;
+  const loading = !errorMessage && !activeForm && !showSimulatorOff;
 
   const steps = useMemo(() => {
     if (!activeForm) return [];
@@ -250,7 +296,7 @@ function CheckInContent() {
 
   return (
     <div className="min-h-screen w-full bg-surface-container-high flex items-center justify-center sm:p-6">
-      {!isTokenMode && (
+      {addressRead && !isTokenMode && !simulatorOff && (
         <SimulatorControl
           options={simOptions}
           value={selected?.key ?? ""}
@@ -264,8 +310,20 @@ function CheckInContent() {
 
         {loading && <CentredMessage icon="progress_activity" title="Loading check-in…" spin />}
 
+        {showSimulatorOff && (
+          <CentredMessage
+            icon="chat"
+            title="Open your check-in from WhatsApp"
+            body="Today's check-in opens from the link in your WhatsApp reminder from the hospital."
+          />
+        )}
+
         {errorMessage && (
-          <CentredMessage icon="cloud_off" title="Backend unavailable" body={errorMessage} />
+          <CentredMessage
+            icon={isTokenMode ? "link_off" : "cloud_off"}
+            title={isTokenMode ? "This link can't be opened" : "Backend unavailable"}
+            body={errorMessage}
+          />
         )}
 
         {activeForm && (
@@ -292,6 +350,7 @@ function CheckInContent() {
                   {steps[stepIndex].kind === "section" && (
                     <SectionStep
                       section={steps[stepIndex].section as FormSection}
+                      episode={activeForm.episode}
                       answers={answers}
                       onAnswer={setAnswer}
                       urgent={urgent}
@@ -583,11 +642,13 @@ function HomeScreen({
 
 function SectionStep({
   section,
+  episode,
   answers,
   onAnswer,
   urgent,
 }: {
   section: FormSection;
+  episode: EpisodeContext;
   answers: Answers;
   onAnswer: (code: string, value: AnswerValue) => void;
   urgent: FormParameter[];
@@ -625,12 +686,18 @@ function SectionStep({
         );
       })}
 
-      {urgent.length > 0 && <UrgentNotice flags={urgent} />}
+      {urgent.length > 0 && <UrgentNotice flags={urgent} episode={episode} />}
     </>
   );
 }
 
-function UrgentNotice({ flags }: { flags: FormParameter[] }) {
+/** Emergency services on any mobile phone in India, and in most other countries. */
+const EMERGENCY_SERVICES = "112";
+
+function UrgentNotice({ flags, episode }: { flags: FormParameter[]; episode: EpisodeContext }) {
+  // The hospital's own number once it has set one; until then, emergency services
+  // rather than a number that nobody at this hospital answers.
+  const phone = episode.hospital_emergency_phone;
   return (
     <section className="bg-error text-on-error rounded-2xl p-space-md">
       <div className="flex items-center gap-space-xs mb-space-xs">
@@ -639,14 +706,17 @@ function UrgentNotice({ flags }: { flags: FormParameter[] }) {
       </div>
       <p className="font-body-md opacity-95 mb-space-md">
         You told us about {flags.map((f) => f.name.toLowerCase()).join(" and ")}. Do not wait for
-        this check-in to be reviewed — ring the ward directly.
+        this check-in to be reviewed —{" "}
+        {phone
+          ? `ring ${episode.hospital_name} directly.`
+          : `call your hospital now. If you cannot reach them, call emergency services on ${EMERGENCY_SERVICES}.`}
       </p>
       <a
-        href="tel:+914222000000"
+        href={`tel:${phone ?? EMERGENCY_SERVICES}`}
         className="w-full h-12 rounded-full bg-surface-container-lowest text-error font-title-sm flex items-center justify-center gap-space-xs"
       >
         <span className="material-symbols-outlined text-[20px]">call</span>
-        Call the ward
+        {phone ? "Call the ward" : `Call emergency services (${EMERGENCY_SERVICES})`}
       </a>
     </section>
   );
@@ -727,7 +797,7 @@ function ReviewStep({
 }) {
   return (
     <>
-      {urgent.length > 0 && <UrgentNotice flags={urgent} />}
+      {urgent.length > 0 && <UrgentNotice flags={urgent} episode={form.episode} />}
 
       {error && (
         <section className="bg-error-container border border-error/40 rounded-2xl p-space-md">

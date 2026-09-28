@@ -32,7 +32,7 @@ async def main(mrn: str) -> None:
     if row is None:
         sys.exit(f"No active episode for MRN {mrn}")
     token = generate_magic_token(row["episode_id"], row["day"])
-    print(f"{settings.FRONTEND_BASE_URL.rstrip('/')}/checkin?token={token}")
+    print(f"{settings.FRONTEND_BASE_URL.rstrip('/')}/checkin#token={token}")
 
 
 asyncio.run(main(sys.argv[1] if len(sys.argv) > 1 else "FX-01"))

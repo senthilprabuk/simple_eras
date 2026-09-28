@@ -18,7 +18,9 @@ its {{1}}, {{2}}... are the placeholders of the hospital's wording in the order
 they appear. The wording approved in Meta must therefore match the templates page.
 
 The check-in link is a credential for the patient's day, so it is minted at send
-time and never stored: the logged body shows [check-in link] in its place.
+time and never stored: the logged body shows [check-in link] in its place. The
+token goes after '#', which browsers never send to a server, so no web server or
+proxy logs it either.
 """
 
 import logging
@@ -62,9 +64,18 @@ def reply_type_for(tier: str) -> str:
 
 
 def message_values(
-    message_type: str, *, patient_name: str, hospital_name: str, day: int, checkin_link: Optional[str] = None
+    message_type: str,
+    *,
+    patient_name: str,
+    hospital_name: str,
+    day: int,
+    checkin_link: Optional[str] = None,
+    hospital_phone: Optional[str] = None,
 ) -> Dict[str, str]:
-    """What each placeholder stands for. Only a reminder has a link to give."""
+    """
+    What each placeholder stands for. Only a reminder has a link to give, and
+    {hospital_phone} only has a value once the hospital has set its number.
+    """
     names = (patient_name or "").split()
     values = {
         "patient_first_name": names[0] if names else patient_name,
@@ -73,6 +84,8 @@ def message_values(
     }
     if message_type == "checkin_reminder":
         values["checkin_link"] = checkin_link or REDACTED_LINK
+    if hospital_phone:
+        values["hospital_phone"] = hospital_phone
     return values
 
 
@@ -157,7 +170,7 @@ async def queue_message(
 DELIVERABLE = text("""
     SELECT m.message_id, m.message_type, m.episode_id, m.hospital_id, m.day_after_discharge,
            m.phone_e164, m.attempts, p.patient_name, p.language_code, h.hospital_name,
-           hw.phone_number_id, hw.access_token
+           h.emergency_phone_e164, hw.phone_number_id, hw.access_token
     FROM txn.patient_message m
     JOIN txn.patient p   ON p.patient_id = m.patient_id
     JOIN meta.hospital h ON h.hospital_id = m.hospital_id
@@ -187,10 +200,10 @@ async def deliver_message(session: AsyncSession, message_id: UUID) -> Optional[s
     link = None
     if message_type == "checkin_reminder":
         token = generate_magic_token(m["episode_id"], m["day_after_discharge"])
-        link = f"{settings.FRONTEND_BASE_URL.rstrip('/')}/checkin?token={token}"
+        link = f"{settings.FRONTEND_BASE_URL.rstrip('/')}/checkin#token={token}"
     values = message_values(
         message_type, patient_name=m["patient_name"], hospital_name=m["hospital_name"],
-        day=m["day_after_discharge"], checkin_link=link,
+        day=m["day_after_discharge"], checkin_link=link, hospital_phone=m["emergency_phone_e164"],
     )
     try:
         parameters = template_parameters(wording.body, values)

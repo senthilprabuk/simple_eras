@@ -60,11 +60,14 @@ create table meta.hospital (
     is_active         boolean     not null default true,
     created_at        timestamptz not null default now(),
     updated_at        timestamptz not null default now(),
+    emergency_phone_e164 text,                               -- dialled by a patient reporting an emergency symptom
 
     constraint hospital_ack_window_sane
         check (ack_window_secs between 60 and 7200),
     constraint hospital_privacy_law_known
-        check (privacy_law in ('DPDP-2023','HIPAA'))
+        check (privacy_law in ('DPDP-2023','HIPAA')),
+    constraint hospital_emergency_phone_e164
+        check (emergency_phone_e164 ~ '^\+[1-9][0-9]{7,14}$')
 );
 
 create trigger hospital_touch before update on meta.hospital

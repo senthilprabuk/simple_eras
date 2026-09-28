@@ -45,6 +45,9 @@ class EpisodeContext(BaseModel):
     first_name: str
     mrn: Optional[str] = None
     hospital_name: str
+    hospital_emergency_phone: Optional[str] = Field(
+        None, description="Number shown to a patient reporting an emergency symptom; null until the hospital sets one"
+    )
     procedure_code: str
     actual_post_op_day: int
     monitoring_ends_on: date

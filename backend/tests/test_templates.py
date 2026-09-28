@@ -9,7 +9,9 @@ def _entry(catalogue, key, lang):
 async def test_catalogue_lists_every_template_in_every_language(client, nurse_headers):
     catalogue = (await client.get("/api/v1/templates", headers=nurse_headers)).json()
     assert len(catalogue["templates"]) == 15
-    assert set(catalogue["placeholders"]) == {"patient_first_name", "hospital_name", "post_op_day", "checkin_link"}
+    assert set(catalogue["placeholders"]) == {
+        "patient_first_name", "hospital_name", "post_op_day", "checkin_link", "hospital_phone",
+    }
 
     reminder = _entry(catalogue, "checkin_reminder", "en")
     assert "{checkin_link}" in reminder["body"]
@@ -63,3 +65,17 @@ async def test_a_reply_cannot_promise_a_link_it_has_no_value_for(client, db):
         assert res.status_code == 422
         assert "{checkin_link}" in res.json()["detail"]
     assert (await client.put("/api/v1/templates/checkin_reminder/en", json={"body": body}, headers=headers)).status_code == 200
+
+
+async def test_hospital_phone_needs_the_hospitals_emergency_number_first(client, db):
+    h = await create_hospital(db, "TPL-PHONE", role="superadmin")
+    headers = await login_headers(client, h.email, h.password)
+    body = "{patient_first_name}, please call {hospital_phone} now."
+
+    res = await client.put("/api/v1/templates/urgent_guidance/en", json={"body": body}, headers=headers)
+    assert res.status_code == 422
+    assert "emergency number" in res.json()["detail"]
+
+    await client.patch("/api/v1/hospital", json={"emergency_phone_e164": "+914225550100"}, headers=headers)
+    res = await client.put("/api/v1/templates/urgent_guidance/en", json={"body": body}, headers=headers)
+    assert res.status_code == 200

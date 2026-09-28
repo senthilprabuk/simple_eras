@@ -7,7 +7,7 @@
 //   wait-for text=<text>       wait (30s) until the page shows the text
 //   wait-for <css>             wait (30s) until an element matches
 //   wait-gone text=<text>|<css>  wait (30s) until it is gone, e.g. text=Loading
-//   fill <css> <text>          focus the input and type (fires React's onChange)
+//   fill <css> [text]          focus the input and type (fires React's onChange); no text clears it
 //   click text=<text>          click the button/link whose text contains <text>
 //   click <css>                click the first element matching <css>
 //   scroll-to text=<text>|<css>  bring it to the top of the view (screenshots show the view only)
@@ -174,8 +174,15 @@ async function main() {
       const found = await evaluate(`(() => { const e = ${selectorFor(selector)}; if (!e) return false; e.focus(); e.select && e.select(); return true; })()`);
       if (!found) throw new Error(`no element for ${selector}`);
       // insertText goes through the browser's input pipeline, so React sees the change.
-      await page("Input.insertText", { text: value });
-      return `${selector} filled`;
+      // Inserting "" changes nothing, so an empty fill deletes the selection with Backspace.
+      if (value) {
+        await page("Input.insertText", { text: value });
+      } else {
+        for (const type of ["keyDown", "keyUp"]) {
+          await page("Input.dispatchKeyEvent", { type, key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 });
+        }
+      }
+      return value ? `${selector} filled` : `${selector} cleared`;
     },
     async click(arg) {
       const clicked = await evaluate(`(() => { const e = ${selectorFor(arg)}; if (!e) return false; e.scrollIntoView({block: 'center'}); e.click(); return true; })()`);

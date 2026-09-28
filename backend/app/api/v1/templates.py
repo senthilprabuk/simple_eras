@@ -68,6 +68,16 @@ async def save_template(
             status_code=422,
             detail=f"This message cannot fill {', '.join('{' + n + '}' for n in unfillable)}",
         )
+    if "hospital_phone" in PLACEHOLDER_PATTERN.findall(update.body):
+        number = (await db.execute(
+            text("SELECT emergency_phone_e164 FROM meta.hospital WHERE hospital_id = :h_id"),
+            {"h_id": current_admin.hospital_id},
+        )).scalar_one()
+        if not number:
+            raise HTTPException(
+                status_code=422,
+                detail="Set the hospital's emergency number in hospital settings before using {hospital_phone}",
+            )
 
     row = (await db.execute(text("""
         INSERT INTO meta.message_template (hospital_id, template_key, language_code, body, is_active, updated_by)

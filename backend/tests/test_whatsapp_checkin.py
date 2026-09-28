@@ -168,3 +168,37 @@ def test_only_a_critical_verdict_gets_urgent_guidance():
     assert reply_type_for("critical") == "urgent_guidance"
     assert reply_type_for("review") == "checkin_confirmation"
     assert reply_type_for("normal") == "checkin_confirmation"
+
+
+async def test_with_the_simulator_off_only_the_patients_link_opens_a_check_in(client, db, monkeypatch):
+    monkeypatch.setattr(settings, "CHECKIN_SIMULATOR_ENABLED", False)
+    hospital, day = await _linked_patient(db, "LINK-SIM-OFF")
+
+    assert (await client.get("/api/v1/checkin/episodes")).status_code == 404
+    assert (await client.get(f"/api/v1/checkin/form?episode_id={hospital.episode_id}")).status_code == 404
+    res = await client.post("/api/v1/checkin", json=_submission(hospital.episode_id, day, None, []))
+    assert res.status_code == 401
+    submitted = (await db.execute(
+        text("SELECT count(*) FROM txn.patient_check_in WHERE episode_id = :e"), {"e": hospital.episode_id}
+    )).scalar_one()
+    assert submitted == 0
+
+    token = generate_magic_token(hospital.episode_id, day)
+    res = await client.get("/api/v1/checkin/form", headers={"X-Checkin-Token": token})
+    assert res.status_code == 200
+    res = await client.post("/api/v1/checkin", json=_submission(hospital.episode_id, day, token, []))
+    assert res.status_code == 201
+
+
+async def test_the_form_carries_the_hospitals_emergency_number(client, db):
+    hospital, day = await _linked_patient(db, "LINK-SOS")
+    headers = {"X-Checkin-Token": generate_magic_token(hospital.episode_id, day)}
+
+    form = (await client.get("/api/v1/checkin/form", headers=headers)).json()
+    assert form["episode"]["hospital_emergency_phone"] is None
+
+    await db.execute(text("UPDATE meta.hospital SET emergency_phone_e164 = '+914225550100' WHERE hospital_id = :h"),
+                     {"h": hospital.hospital_id})
+    await db.commit()
+    form = (await client.get("/api/v1/checkin/form", headers=headers)).json()
+    assert form["episode"]["hospital_emergency_phone"] == "+914225550100"

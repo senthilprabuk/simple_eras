@@ -73,7 +73,8 @@ app.add_middleware(
     allow_credentials=True,
     # Every method the API uses; a missing one fails only in the browser, at the CORS preflight.
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allow_headers=["Authorization", "Content-Type"],
+    # X-Checkin-Token carries a patient's check-in link, kept out of URLs and so out of access logs.
+    allow_headers=["Authorization", "Content-Type", "X-Checkin-Token"],
 )
 
 app.include_router(api_v1_router)

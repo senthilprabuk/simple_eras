@@ -29,6 +29,7 @@ function SettingsForm({ hospital, onSaved, onCancel }: { hospital: HospitalProfi
   const [city, setCity] = useState(hospital.city ?? "");
   const [timezone, setTimezone] = useState(hospital.timezone);
   const [minutes, setMinutes] = useState(String(hospital.ack_window_secs / 60));
+  const [emergencyPhone, setEmergencyPhone] = useState(hospital.emergency_phone_e164 ?? "");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -36,14 +37,25 @@ function SettingsForm({ hospital, onSaved, onCancel }: { hospital: HospitalProfi
   const minutesError = !Number.isInteger(minutesValue) || minutesValue < 1 || minutesValue > 120
     ? "A whole number of minutes from 1 to 120."
     : undefined;
+  // Same rule as the server: international format, typed with spaces or dashes if you like.
+  const phoneDigits = emergencyPhone.replace(/[\s\-().]/g, "");
+  const phoneError = phoneDigits && !/^\+[1-9][0-9]{7,14}$/.test(phoneDigits)
+    ? "Use international format, e.g. +91 followed by the number."
+    : undefined;
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (minutesError || !name.trim()) return;
+    if (minutesError || phoneError || !name.trim()) return;
     setSaving(true);
     setError(null);
     try {
-      await updateHospital({ hospital_name: name.trim(), city: city.trim(), timezone: timezone.trim(), ack_window_secs: minutesValue * 60 });
+      await updateHospital({
+        hospital_name: name.trim(),
+        city: city.trim(),
+        timezone: timezone.trim(),
+        ack_window_secs: minutesValue * 60,
+        emergency_phone_e164: emergencyPhone.trim(),
+      });
       onSaved();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not save.");
@@ -81,11 +93,29 @@ function SettingsForm({ hospital, onSaved, onCancel }: { hospital: HospitalProfi
             </span>
           )}
         </label>
+        <label className="flex flex-col gap-1 md:col-span-2">
+          <span className="font-label-md text-on-surface">Emergency number for patients</span>
+          <input
+            className={inputClass}
+            type="tel"
+            placeholder="International format, e.g. +91 …"
+            value={emergencyPhone}
+            onChange={(e) => setEmergencyPhone(e.target.value)}
+          />
+          <FieldError message={phoneError} />
+          {!phoneError && (
+            <span className="font-body-sm text-on-surface-variant">
+              A patient who reports an emergency symptom is asked to call this number straight away. Until
+              it is set, they are told to call emergency services (112). Messages can include it as
+              {" {hospital_phone}"}.
+            </span>
+          )}
+        </label>
       </div>
       {error && <ErrorBanner message={error} />}
       <div className="flex gap-space-sm justify-end">
         <button type="button" className={secondaryButtonClass} onClick={onCancel}>Cancel</button>
-        <button type="submit" className={primaryButtonClass} disabled={saving || !!minutesError || !name.trim()}>
+        <button type="submit" className={primaryButtonClass} disabled={saving || !!minutesError || !!phoneError || !name.trim()}>
           {saving ? "Saving…" : "Save settings"}
         </button>
       </div>
@@ -134,7 +164,7 @@ export default function HospitalsPage() {
                   }}
                 />
               ) : (
-                <dl className="grid grid-cols-1 sm:grid-cols-3 gap-space-md">
+                <dl className="grid grid-cols-1 sm:grid-cols-4 gap-space-md">
                   <div>
                     <dt className="font-label-sm text-on-surface-variant uppercase tracking-wider">Timezone</dt>
                     <dd className="font-body-md text-on-surface">{data.timezone}</dd>
@@ -142,6 +172,12 @@ export default function HospitalsPage() {
                   <div>
                     <dt className="font-label-sm text-on-surface-variant uppercase tracking-wider">Acknowledgement window</dt>
                     <dd className="font-body-md text-on-surface">{formatDuration(data.ack_window_secs)}</dd>
+                  </div>
+                  <div>
+                    <dt className="font-label-sm text-on-surface-variant uppercase tracking-wider">Emergency number</dt>
+                    <dd className="font-body-md text-on-surface">
+                      {data.emergency_phone_e164 ?? "Not set: patients are told to call 112"}
+                    </dd>
                   </div>
                   <div>
                     <dt className="font-label-sm text-on-surface-variant uppercase tracking-wider">Your access</dt>

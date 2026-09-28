@@ -13,6 +13,7 @@ PLACEHOLDERS: Dict[str, str] = {
     "hospital_name": "Your hospital's name",
     "post_op_day": "Days since discharge",
     "checkin_link": "Link to the patient's daily check-in",
+    "hospital_phone": "Your hospital's emergency number, from hospital settings",
 }
 
 TEMPLATE_PURPOSES: Dict[str, str] = {
