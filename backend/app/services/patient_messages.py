@@ -56,11 +56,12 @@ class WordingUnfillable(ValueError):
 
 def reply_type_for(tier: str) -> str:
     """
-    The WhatsApp reply to a scored check-in. Only a critical verdict gets urgent
-    guidance, whose wording tells the patient to call now; a check-in the nurses
-    will review gets the same plain receipt as a normal one.
+    The WhatsApp reply to a scored check-in. Critical and emergency verdicts get
+    urgent guidance, whose wording tells the patient to call now; emergency is what
+    breathlessness or chest pain produces. A check-in the nurses will review gets
+    the same plain receipt as a normal one.
     """
-    return "urgent_guidance" if tier == "critical" else "checkin_confirmation"
+    return "urgent_guidance" if tier in ("critical", "emergency") else "checkin_confirmation"
 
 
 def message_values(

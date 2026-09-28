@@ -164,10 +164,27 @@ async def test_without_reply_wording_nothing_is_sent_and_the_gap_is_logged(clien
     assert message["status"] == "failed"
 
 
-def test_only_a_critical_verdict_gets_urgent_guidance():
+def test_critical_and_emergency_verdicts_get_urgent_guidance():
+    assert reply_type_for("emergency") == "urgent_guidance"
     assert reply_type_for("critical") == "urgent_guidance"
     assert reply_type_for("review") == "checkin_confirmation"
     assert reply_type_for("normal") == "checkin_confirmation"
+
+
+async def test_reporting_breathlessness_gets_urgent_guidance_on_whatsapp(client, db):
+    hospital, day = await _linked_patient(db, "LINK-BREATH")
+    token = generate_magic_token(hospital.episode_id, day)
+    form = (await client.get("/api/v1/checkin/form", headers={"X-Checkin-Token": token})).json()
+    breathless = next(p for s in form["sections"] for p in s["parameters"] if p["code"] == "breathless")
+
+    res = await client.post("/api/v1/checkin", json=_submission(
+        hospital.episode_id, day, token, [{"parameter_id": breathless["parameter_id"], "value_bool": True}],
+    ))
+    assert res.json()["tier"] == "emergency"
+
+    [message] = await _messages(db, hospital.episode_id)
+    assert message["message_type"] == "urgent_guidance"
+    assert message["body"] == "Patient, please call Hospital LINK-BREATH now."
 
 
 async def test_with_the_simulator_off_only_the_patients_link_opens_a_check_in(client, db, monkeypatch):
