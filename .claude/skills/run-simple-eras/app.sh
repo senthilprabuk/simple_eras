@@ -12,6 +12,10 @@
 #   db-status    migrations applied to the database in backend/.env
 #   db-build     build an EMPTY database from db/schema and db/seed, then the demo seed
 #   reset-demo   rebuild the FX-* demo patients at day 21 and their alerts (undoes test check-ins)
+#   demo         prepare a demo in one go: demo settings, reset, restart, smoke, logins and links
+#
+#   reset-demo and demo refuse a database with patients outside the demo cohort; add --force
+#   only if it really is a demo database.
 set -euo pipefail
 
 SKILL=$(cd "$(dirname "$0")" && pwd)
@@ -45,13 +49,16 @@ case "${1:-}" in
     if curl -sf -o /dev/null "$API/health"; then
       echo "backend already running"
     else
-      (cd "$ROOT/backend" && nohup "$PY" -m uvicorn app.main:app --host 127.0.0.1 --port 8000 \
-        >"$LOGS/backend.log" 2>&1 &)
+      # The whole subshell is redirected, not just the server: Git Bash keeps a bash
+      # wrapper around each Windows process, and a wrapper still holding the caller's
+      # output would keep any pipe reading this script open for as long as the server runs.
+      (cd "$ROOT/backend" && exec nohup "$PY" -m uvicorn app.main:app --host 127.0.0.1 --port 8000) \
+        >"$LOGS/backend.log" 2>&1 </dev/null &
     fi
     if curl -sf -o /dev/null "$WEB/login"; then
       echo "frontend already running"
     else
-      (cd "$ROOT/frontend" && nohup npm run dev -- --port 3000 >"$LOGS/frontend.log" 2>&1 &)
+      (cd "$ROOT/frontend" && exec nohup npm run dev -- --port 3000) >"$LOGS/frontend.log" 2>&1 </dev/null &
     fi
     wait_for "$API/health" 90
     wait_for "$WEB/login" 120
@@ -66,7 +73,7 @@ case "${1:-}" in
   smoke)
     curl -sf "$API/health" && echo
     token=$(curl -sf -X POST "$API/api/v1/auth/login" -H 'Content-Type: application/json' \
-      -d '{"email":"admin@stmarys.org","password":"password123"}' |
+      -d '{"email":"admin@noyyalortho.in","password":"password123"}' |
       "$PY" -c 'import json, sys; print(json.load(sys.stdin)["access_token"])')
     for path in /api/v1/alerts /api/v1/patients /api/v1/templates /api/v1/whatsapp/account; do
       printf '%-26s %s\n' "$path" \
@@ -95,8 +102,60 @@ case "${1:-}" in
     "$PY" "$ROOT/backend/seed/seed_demo.py" | tail -n 9
     ;;
   reset-demo)
-    "$PY" "$SKILL/db_build.py" --fixtures-only
+    "$PY" "$SKILL/db_build.py" --fixtures-only "${@:2}"
     "$PY" "$ROOT/backend/seed/seed_demo.py" | tail -n 9
+    ;;
+  demo)
+    # 1. Fresh data first: the reset refuses a database with real patients, and
+    #    nothing else is touched if it does.
+    echo "== Resetting the demo data"
+    "$PY" "$SKILL/db_build.py" --fixtures-only "${@:2}"
+    "$PY" "$ROOT/backend/seed/seed_demo.py" >/dev/null
+
+    # 2. Demo settings: escalations and WhatsApp messages go to the log (so no
+    #    "no notification provider" banner), and the /checkin simulator is on.
+    env="$ROOT/backend/.env"
+    for kv in CHECKIN_SIMULATOR_ENABLED=true NOTIFICATION_PROVIDER=log WHATSAPP_PROVIDER=log; do
+      key=${kv%%=*}
+      if tr -d '\r' <"$env" | grep -qx "$kv"; then
+        continue
+      elif grep -q "^$key=" "$env"; then
+        sed -i "s/^$key=.*/$kv/" "$env" && echo "set $kv in backend/.env"
+      else
+        echo "$kv" >>"$env" && echo "added $kv to backend/.env"
+      fi
+    done
+
+    # 3. Restart so the servers read those settings and the latest code.
+    echo "== Restarting the app"
+    "$0" stop >/dev/null
+    "$0" start >/dev/null
+    "$0" smoke | tail -n 4 | awk '$2 != 200 { bad = 1 } END { exit bad }' || {
+      echo "The smoke check failed; see: $0 logs" >&2
+      exit 1
+    }
+
+    # Logins match backend/seed/seed_demo.py.
+    cat <<SUMMARY
+
+Demo ready at $(date +%H:%M): Noyyal Orthopaedic Centre, today's alerts raised minutes ago.
+
+Dashboard  $WEB    password for every login: password123
+  Nurse       anitha.joseph@noyyalortho.in   Anitha Joseph
+  Surgeon     dr.arun@noyyalortho.in         Dr. Arun Prakash
+  Superadmin  admin@noyyalortho.in           Vasanth Raj (WhatsApp settings, templates, clinicians)
+
+Patient check-in links for today (open on a phone, or a browser window about 430px wide):
+SUMMARY
+    "$PY" "$SKILL/checkin_link.py" FX-06 FX-01 FX-12
+    cat <<'SUMMARY'
+
+Reminders
+  - Acknowledge the three new alerts within 15 minutes, or acknowledgement drops below 90%.
+  - Suresh (FX-06) has not checked in today, so his link shows the full check-in; checking in
+    closes his missed alert. Lakshmi (Tamil) and Sunita (Hindi) show "Check in again".
+  - Run this again before the next demo, and at least once a day.
+SUMMARY
     ;;
   *)
     awk 'NR > 1 && !/^#/ { exit } NR > 1' "$0"

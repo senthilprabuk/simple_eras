@@ -1,6 +1,6 @@
 ---
 name: run-simple-eras
-description: Start, stop, build, test and drive the ERAS remote-monitoring app on Windows (FastAPI backend, Next.js clinician dashboard, patient check-in page). Use when asked to run or start simple_eras, sign in to the dashboard, open or submit a patient check-in link, take a screenshot of a page, smoke-test the API, build or reset the demo database, or run its tests.
+description: Start, stop, build, test and drive the ERAS remote-monitoring app on Windows (FastAPI backend, Next.js clinician dashboard, patient check-in page). Use when asked to run or start simple_eras, prepare or reset for a demo, sign in to the dashboard, open or submit a patient check-in link, take a screenshot of a page, smoke-test the API, build or reset the demo database, or run its tests.
 ---
 
 ERAS is a FastAPI backend (`:8000`) and a Next.js frontend (`:3000`) on a Neon Postgres
@@ -32,8 +32,27 @@ logins (refuses a database that already has the schema; upgrade those with `db/m
 
 ```bash
 .claude/skills/run-simple-eras/app.sh db-build
-.claude/skills/run-simple-eras/app.sh db-status     # every migration through 013 "applied"
+.claude/skills/run-simple-eras/app.sh db-status     # every migration through 015 "applied"
 ```
+
+## Before a demo
+
+One command, about 30 seconds: resets the demo data, makes sure `backend/.env` has the demo
+settings (`CHECKIN_SIMULATOR_ENABLED=true`, `NOTIFICATION_PROVIDER=log` so escalations count as
+delivered and the "no notification provider" banner stays away, `WHATSAPP_PROVIDER=log`), restarts
+both servers, runs the smoke check, and prints the logins and today's check-in links for Suresh
+(English, not yet checked in), Lakshmi (Tamil) and Sunita (Hindi).
+
+```bash
+.claude/skills/run-simple-eras/app.sh demo
+```
+
+Run it shortly before each demo and at least once a day. Alert times are seeded relative to now:
+today's alerts pass their 15-minute window about 15 minutes later, so acknowledge them during the
+demo. The patients are pinned to "day 21 today", so by the next day they have all missed a day.
+The reset clears every hospital's alerts and evaluations, so `demo` and `reset-demo` refuse a
+database with patients outside the FX-* demo cohort unless given `--force`. Never use the demo
+settings on a database with real patients.
 
 ## Run (agent path)
 
@@ -48,7 +67,7 @@ Drive the dashboard: sign in, wait for real data, open a page, screenshot.
 node .claude/skills/run-simple-eras/driver.mjs <<'EOF'
 nav http://localhost:3000/login
 wait-for input[autocomplete=username]
-fill input[autocomplete=username] admin@stmarys.org
+fill input[autocomplete=username] admin@noyyalortho.in
 fill input[autocomplete=current-password] password123
 click button[type=submit]
 wait-for text=Prioritized clinical queue
@@ -76,11 +95,13 @@ click text=Start today's check-in
 wait-for text=Step 1 of 5
 click text=2
 click text=Continue
+click text=Continue without them
 wait-for text=Step 2 of 5
 eval [...document.querySelectorAll('button')].filter(b => b.innerText.trim() === 'No').map(b => b.click()).length
 click text=Continue
 wait-for text=Step 3 of 5
 click text=Continue
+click text=Continue without them
 wait-for text=Step 4 of 5
 click text=Continue
 wait-for text=Step 5 of 5
@@ -115,10 +136,11 @@ prints each path). A failing command saves `NN-failure.png` there and exits 1. S
 | `smoke` | API sign-in as the demo superadmin and four authenticated reads |
 | `link [MRN]` | today's check-in link for a patient (default FX-01) |
 | `logs [n]` | tail both server logs |
-| `db-build` / `db-status` / `reset-demo` | build an empty DB / list migrations / rebuild the demo patients |
+| `demo [--force]` | prepare a demo: reset, demo settings, restart, smoke, logins and links |
+| `db-build` / `db-status` / `reset-demo [--force]` | build an empty DB / list migrations / rebuild the demo patients |
 
-Demo logins, password `password123`: `admin@stmarys.org` (superadmin: WhatsApp settings,
-templates, clinicians), `nurse.sarah@stmarys.org` and `dr.mehta@stmarys.org` (clinicians),
+Demo logins, password `password123`: `admin@noyyalortho.in` (superadmin: WhatsApp settings,
+templates, clinicians), `anitha.joseph@noyyalortho.in` and `dr.arun@noyyalortho.in` (clinicians),
 `appadmin@eras.local` (platform admin, opens `/app_admin`).
 
 ```bash
@@ -146,6 +168,16 @@ The backend suite builds a throwaway database next to the one in `backend/.env` 
 needs CREATEDB, which `neondb_owner` has), runs, and drops it.
 
 ## Gotchas
+
+- **A blank answer is "not answered", never "no".** Continue refuses to leave a step while a yes/no
+  question is blank (it marks them in red). Leaving a reading blank shows "You haven't answered: …"
+  with **Continue without them**, which a script must click. The nurse's queue row lists the blanks.
+- **A real check-in closes the patient's open missed-check-in alert** (status Expired, with a note in
+  the alert history); a simulated day does not. After submitting FX-06's check-in, Suresh leaves the
+  queue. Clinical alerts stay open until a nurse records an outcome.
+- **FX-01 (Lakshmi) checks in in Tamil and FX-12 (Sunita) in Hindi**; everyone else in English. The
+  home screen's English / தமிழ் / हिन्दी buttons switch any patient. `wait-for` text must be in the
+  language shown. The Tamil and Hindi are drafts that need professional review.
 
 - **`GET /` on the backend is a 404.** Poll `/health` for readiness; `app.sh start` does.
 - **A sign-in lives in one tab's sessionStorage.** A one-shot `msedge --headless --screenshot`
@@ -186,6 +218,10 @@ needs CREATEDB, which `neondb_owner` has), runs, and drops it.
   (doubled slashes, or Git Bash rewrites them into paths).
 
 ## Troubleshooting
+
+- **`... has N patient(s) outside the FX-* demo cohort ... run again with --force`** from `app.sh demo`
+  or `reset-demo`: the database holds non-demo patients (someone enrolled a test patient, or it is
+  not a demo database). Add `--force` only if it is a demo database.
 
 - **`psycopg.OperationalError: ... password authentication failed for user 'neondb_owner'`**
   (every test errors in setup): the Neon password or endpoint in `backend/.env` changed. Copy the

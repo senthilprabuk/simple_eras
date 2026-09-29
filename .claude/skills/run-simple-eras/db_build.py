@@ -9,6 +9,9 @@ schema: upgrade that one with db/migrate.py instead.
 --fixtures-only re-runs db/seed/02_fixtures.sql on a built database, which deletes
 and rebuilds the FX-* demo patients (and everything recorded against them) at
 post-op day 21. Follow it with backend/seed/seed_demo.py to restore the demo alerts.
+That seed clears every hospital's alerts and evaluations, so --fixtures-only
+refuses a database with any patient outside the FX-* demo cohort unless --force
+is given too.
 
 Uses DATABASE_URL from the environment, else backend/.env.
 """
@@ -36,6 +39,7 @@ SCHEMA_AND_SEED = [
 FIXTURES = ["db/seed/02_fixtures.sql"]
 
 fixtures_only = "--fixtures-only" in sys.argv[1:]
+force = "--force" in sys.argv[1:]
 url = make_url(settings.DATABASE_URL)
 with psycopg.connect(url.render_as_string(hide_password=False), autocommit=True) as conn:
     built = conn.execute("SELECT 1 FROM pg_namespace WHERE nspname = 'meta'").fetchone() is not None
@@ -43,6 +47,14 @@ with psycopg.connect(url.render_as_string(hide_password=False), autocommit=True)
         sys.exit(f"{url.host}/{url.database} has no ERAS schema yet; run without --fixtures-only first.")
     if not fixtures_only and built:
         sys.exit(f"{url.host}/{url.database} already has the ERAS schema; use db/migrate.py to upgrade it.")
+    if fixtures_only and not force:
+        others = conn.execute(
+            "SELECT count(*) FROM txn.patient WHERE mrn IS NULL OR mrn NOT LIKE 'FX-%'"
+        ).fetchone()[0]
+        if others:
+            sys.exit(f"{url.host}/{url.database} has {others} patient(s) outside the FX-* demo cohort, and a demo "
+                     "reset clears every hospital's alerts and evaluations. If this really is a demo database, "
+                     "run again with --force.")
     for rel in FIXTURES if fixtures_only else SCHEMA_AND_SEED:
         started = time.time()
         conn.execute((REPO / rel).read_text(encoding="utf-8"))
