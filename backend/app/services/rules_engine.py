@@ -27,7 +27,7 @@ Order inside `evaluate` is load-bearing; see the comments on each step.
 import hashlib
 import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from uuid import UUID
 
 from sqlalchemy import text
@@ -152,6 +152,8 @@ class Evaluation:
     reason_key: str
     coverage: Optional[float] = None
     is_low_confidence: bool = False
+    # The day's questions left blank. Blank is unknown, never "no": the nurse sees them listed.
+    unanswered: Tuple[str, ...] = ()
 
 
 # --------------------------------------------------------------- scoring one measure
@@ -343,10 +345,14 @@ def _reasons(signals: Sequence[Signal]) -> List[Dict[str, Any]]:
     return [{"name": s.name, "detail": s.detail, "score": s.score, "points": s.points} for s in ranked]
 
 
-def _reason_key(signals: Sequence[Signal]) -> str:
+def reason_key_for(names: Iterable[str]) -> str:
     """A stable hash of the sorted signal names, so the same problem twice is one alert."""
-    names = sorted({s.name for s in signals})
-    return hashlib.sha1("|".join(names).encode()).hexdigest()[:16] if names else "none"
+    unique = sorted(set(names))
+    return hashlib.sha1("|".join(unique).encode()).hexdigest()[:16] if unique else "none"
+
+
+def _reason_key(signals: Sequence[Signal]) -> str:
+    return reason_key_for(s.name for s in signals)
 
 
 def _coverage(reading: Reading) -> Optional[float]:
@@ -383,6 +389,7 @@ def evaluate(reading: Reading, window: Window, ruleset: RuleSet) -> Evaluation:
 
     coverage = _coverage(reading)
     low_confidence = coverage is not None and coverage < LOW_CONFIDENCE_COVERAGE
+    unanswered = tuple(code for code in reading.asked if reading.answers.get(code) is None)
 
     def result(tier: str, counted: Sequence[Signal], override: bool) -> Evaluation:
         return Evaluation(
@@ -393,6 +400,7 @@ def evaluate(reading: Reading, window: Window, ruleset: RuleSet) -> Evaluation:
             reason_key=_reason_key(counted),
             coverage=coverage,
             is_low_confidence=low_confidence,
+            unanswered=unanswered,
         )
 
     # 5. Emergency precedes the top band: both are overrides, but only an
@@ -501,25 +509,30 @@ async def _store(
     evaluation_id = (await db.execute(text("""
         INSERT INTO txn.check_in_evaluation
             (check_in_id, episode_id, ruleset_id, day_after_discharge, tier, total_score,
-             is_override, reasons, reason_key, coverage)
-        VALUES (:c, :e, :r, :d, :tier, :total, :override, CAST(:reasons AS jsonb), :key, :coverage)
+             is_override, reasons, reason_key, coverage, unanswered)
+        VALUES (:c, :e, :r, :d, :tier, :total, :override, CAST(:reasons AS jsonb), :key, :coverage, :unanswered)
         RETURNING evaluation_id
     """), {
         "c": check_in_id, "e": episode_id, "r": ruleset_id, "d": day, "tier": result.tier,
         "total": result.total_score, "override": result.is_override,
         "reasons": json.dumps(result.reasons), "key": result.reason_key, "coverage": result.coverage,
+        "unanswered": list(result.unanswered),
     })).scalar_one()
 
     if result.tier == "normal":
         return result, None
 
-    # One alert per problem per day: an identical reason set within 24 hours adds
-    # nothing to the queue unless it has got worse, in which case the alert
-    # already there is raised to the higher tier rather than joined by a second.
+    # One alert per problem: the same reason set adds nothing to the queue while its
+    # alert is still open, or for 24 hours after it was raised, unless it has got
+    # worse, in which case an open alert is raised to the higher tier rather than
+    # joined by a second. An open alert counts at any age: a problem that worsens
+    # two days after it was first raised must still escalate.
     recent = (await db.execute(text("""
         SELECT alert_id, tier, status FROM txn.alert
-        WHERE episode_id = :e AND reason_key = :key AND raised_at > now() - interval '24 hours'
-        ORDER BY raised_at DESC LIMIT 1
+        WHERE episode_id = :e AND reason_key = :key
+          AND (status IN ('open', 'acknowledged') OR raised_at > now() - interval '24 hours')
+        ORDER BY status IN ('open', 'acknowledged') DESC, raised_at DESC
+        LIMIT 1
     """), {"e": episode_id, "key": result.reason_key})).mappings().first()
 
     if recent and TIER_RANK[result.tier] <= TIER_RANK[recent["tier"]]:
@@ -540,6 +553,22 @@ async def _store(
         RETURNING alert_id
     """), {"e": episode_id, "ev": evaluation_id, "tier": result.tier, "key": result.reason_key})).scalar_one_or_none()
     return result, alert_id
+
+
+async def retire_missed_alerts(db: AsyncSession, *, episode_id: UUID, day: int) -> int:
+    """
+    A check-in answers the question a missed alert asks, so the patient's open
+    missed alert closes as expired, stamped with the time and why, instead of
+    waiting for a nurse to record an outcome for a problem that has gone. Every
+    other alert stays open: it carries a clinical finding a nurse must close.
+    Caller commits.
+    """
+    result = await db.execute(text("""
+        UPDATE txn.alert
+           SET status = 'expired', resolved_at = now(), outcome_note = :note
+         WHERE episode_id = :e AND tier = 'missed' AND status IN ('open', 'acknowledged')
+    """), {"e": episode_id, "note": f"Closed automatically: the patient checked in on day {day}."})
+    return result.rowcount
 
 
 async def evaluate_check_in(
@@ -594,7 +623,7 @@ async def evaluate_missed_check_in(
         result = Evaluation(
             tier="missed", total_score=0, is_override=False,
             reasons=_reasons([missed]), reason_key=_reason_key([missed]),
-            coverage=result.coverage, is_low_confidence=True,
+            coverage=result.coverage, is_low_confidence=True, unanswered=result.unanswered,
         )
 
     return await _store(db, episode_id=episode_id, check_in_id=None,

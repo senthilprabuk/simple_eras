@@ -438,7 +438,7 @@ function DraftControls({
 
       <div className="flex flex-col gap-space-sm border-t border-outline-variant/20 pt-space-md">
         <Field label="Clinical approver" hint="The clinician who signed off these rules">
-          <input className={`${inputClass} max-w-sm`} value={approver} onChange={(e) => setApprover(e.target.value)} placeholder="e.g. Dr. K. Mehta" />
+          <input className={`${inputClass} max-w-sm`} value={approver} onChange={(e) => setApprover(e.target.value)} placeholder="e.g. Dr. Arun Prakash" />
         </Field>
         {confirming === "approve" ? (
           <div role="alert" className="flex flex-col gap-space-sm p-space-md rounded-xl border border-primary/40 bg-primary/5">

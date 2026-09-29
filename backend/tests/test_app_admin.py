@@ -107,9 +107,9 @@ async def test_platform_role_has_no_access_to_patient_data(db):
 
 async def test_hospital_list_counts_patients_without_reading_them(client, admin_headers):
     hospitals = (await client.get("/api/v1/app-admin/hospitals", headers=admin_headers)).json()
-    stmarys = next(h for h in hospitals if h["hospital_code"] == "CBE-01")
-    assert (stmarys["active_patients"], stmarys["procedure_codes"], stmarys["privacy_law"]) == (14, ["TKR"], "DPDP-2023")
-    assert stmarys["account_count"] >= 1
+    noyyal = next(h for h in hospitals if h["hospital_code"] == "CBE-01")
+    assert (noyyal["active_patients"], noyyal["procedure_codes"], noyyal["privacy_law"]) == (14, ["TKR"], "DPDP-2023")
+    assert noyyal["account_count"] >= 1
 
 
 async def test_a_new_hospital_and_its_first_superadmin(client, admin_headers):
@@ -219,9 +219,9 @@ async def test_a_draft_from_start_to_approval(client, db, admin_headers):
     removed = await client.delete(f"{base}/{draft_id}/parameters/breathless", headers=admin_headers)
     assert [b["parameter_code"] for b in removed.json()["bindings"]] == ["temp_c", "pain"]
 
-    approved = await client.post(f"{base}/{draft_id}/approve", json={"approved_by": "Dr. K. Mehta"}, headers=admin_headers)
+    approved = await client.post(f"{base}/{draft_id}/approve", json={"approved_by": "Dr. Arun Prakash"}, headers=admin_headers)
     assert approved.status_code == 200, approved.text
-    assert (approved.json()["status"], approved.json()["approved_by"]) == ("approved", "Dr. K. Mehta")
+    assert (approved.json()["status"], approved.json()["approved_by"]) == ("approved", "Dr. Arun Prakash")
 
     versions = next(p for p in (await client.get(base, headers=admin_headers)).json() if p["procedure_code"] == code)["versions"]
     assert [(v["version"], v["status"]) for v in versions] == [("1.1.0", "approved"), ("1.0.0", "retired")]

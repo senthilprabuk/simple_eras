@@ -32,7 +32,7 @@ async def get_queue(
                 alert_id, patient_id, patient_name, mrn, episode_id, hospital_id,
                 hospital_name, procedure_code, day_after_discharge, tier, reasons,
                 raised_at, age_secs, acknowledged, acknowledged_at,
-                acknowledged_by_name, ack_window_secs
+                acknowledged_by_name, ack_window_secs, unanswered
             FROM txn.v_alert_queue
             WHERE hospital_id = :h_id
             ORDER BY
@@ -99,6 +99,10 @@ async def get_kpis(
         JOIN meta.hospital h       ON h.hospital_id = e.hospital_id
         WHERE e.hospital_id = :h_id
           AND a.raised_at >= now() - make_interval(days => :days)
+          -- An alert that closed itself inside its window before anyone acknowledged
+          -- it (a missed check-in the patient answered) never fell due.
+          AND NOT (a.status = 'expired' AND a.acknowledged_at IS NULL
+                   AND a.resolved_at <= a.raised_at + make_interval(secs => h.ack_window_secs))
     """), params)).mappings().one()
 
     # "Today" is the hospital's calendar day, not the database server's.

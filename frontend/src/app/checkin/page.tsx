@@ -15,12 +15,12 @@ import {
   fetchCheckInFormByToken,
   CheckInRequestError,
   submitCheckIn,
-  sectionTitle,
-  SECTION_META,
   isAnswered,
   formatAnswer,
+  unansweredIn,
   urgentAnswers,
 } from "@/lib/checkinApi";
+import { CHECKIN_LANGUAGES, CheckInText, EMERGENCY_SERVICES, checkInText } from "@/lib/checkinText";
 import {
   QuestionCard,
   NumberStepper,
@@ -108,6 +108,11 @@ function CheckInContent() {
   const [loadedKey, setLoadedKey] = useState<string>("");
   const [formError, setFormError] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
+  // undefined: the patient's own language, which the server picks.
+  const [chosenLanguage, setChosenLanguage] = useState<string | undefined>(undefined);
+  // Questions the patient must answer before moving on, and the optional ones they skipped.
+  const [flagged, setFlagged] = useState<Set<string>>(new Set());
+  const [skipped, setSkipped] = useState<FormParameter[] | null>(null);
 
   const [stepIndex, setStepIndex] = useState<number>(HOME);
   const [answers, setAnswers] = useState<Answers>({});
@@ -130,7 +135,7 @@ function CheckInContent() {
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
-    fetchCheckInFormByToken(token)
+    fetchCheckInFormByToken(token, chosenLanguage)
       .then((next) => {
         if (cancelled) return;
         setForm(next);
@@ -145,13 +150,13 @@ function CheckInContent() {
       })
       .catch((err: Error) => {
         if (cancelled) return;
-        setFormError(`${err.message} If this keeps happening, please use the link in your latest WhatsApp reminder.`);
+        setFormError(err.message);
         setLoadedKey(token);
       });
     return () => {
       cancelled = true;
     };
-  }, [token, reloadNonce]);
+  }, [token, reloadNonce, chosenLanguage]);
 
   const simOptions: SimOption[] = useMemo(() => {
     if (isTokenMode || episodes.length === 0) return [];
@@ -211,7 +216,7 @@ function CheckInContent() {
     if (isTokenMode || !selected) return;
     let cancelled = false;
     const key = selected.key;
-    fetchCheckInForm(selected.episodeId, selected.day)
+    fetchCheckInForm(selected.episodeId, selected.day, chosenLanguage)
       .then((next) => {
         if (cancelled) return;
         setForm(next);
@@ -232,7 +237,7 @@ function CheckInContent() {
     return () => {
       cancelled = true;
     };
-  }, [isTokenMode, selected, reloadNonce]);
+  }, [isTokenMode, selected, reloadNonce, chosenLanguage]);
 
   const ready = isTokenMode
     ? (token ? loadedKey === token : false)
@@ -241,19 +246,20 @@ function CheckInContent() {
   const errorMessage = isTokenMode ? formError : (episodesError ?? (ready ? formError : null));
   const showSimulatorOff = simulatorOff && !isTokenMode;
   const loading = !errorMessage && !activeForm && !showSimulatorOff;
+  const text = checkInText(activeForm?.language ?? chosenLanguage);
 
   const steps = useMemo(() => {
     if (!activeForm) return [];
     return [
       ...activeForm.sections.map((s) => ({
         kind: "section" as const,
-        title: sectionTitle(s.key),
+        title: text.sections[s.key] ?? s.key,
         section: s,
       })),
-      { kind: "photo" as const, title: "Wound photo", section: undefined },
-      { kind: "review" as const, title: "Check and send", section: undefined },
+      { kind: "photo" as const, title: text.photoStep, section: undefined },
+      { kind: "review" as const, title: text.reviewStep, section: undefined },
     ];
-  }, [activeForm]);
+  }, [activeForm, text]);
 
   const allParameters: FormParameter[] = useMemo(
     () => (activeForm ? activeForm.sections.flatMap((s) => s.parameters) : []),
@@ -270,6 +276,33 @@ function CheckInContent() {
 
   const setAnswer = (code: string, value: AnswerValue) =>
     setAnswers((prev) => ({ ...prev, [code]: value }));
+
+  const goTo = (index: number) => {
+    setFlagged(new Set());
+    setSkipped(null);
+    setStepIndex(index);
+  };
+
+  // A blank answer is unknown, never "no". Yes/no symptom questions must be answered;
+  // a reading may be skipped, but only once the patient has seen what is missing.
+  const goNext = () => {
+    const step = steps[stepIndex];
+    if (step.kind === "section" && step.section) {
+      const { required, optional } = unansweredIn(step.section, answers);
+      if (required.length > 0) {
+        setSkipped(null);
+        setFlagged(new Set(required.map((p) => p.code)));
+        return;
+      }
+      if (optional.length > 0 && skipped === null) {
+        setFlagged(new Set());
+        setSkipped(optional);
+        return;
+      }
+    }
+    goTo(stepIndex + 1);
+  };
+  const stillFlagged = new Set([...flagged].filter((code) => !isAnswered(answers[code])));
 
   const handleSubmit = async () => {
     if (!activeForm) return;
@@ -308,21 +341,17 @@ function CheckInContent() {
       <div className="relative flex flex-col w-full h-screen bg-surface-bright overflow-hidden sm:h-[860px] sm:max-h-[calc(100vh-3rem)] sm:w-[400px] sm:rounded-[2.25rem] sm:border-[10px] sm:border-on-surface sm:shadow-2xl">
         <StatusBar />
 
-        {loading && <CentredMessage icon="progress_activity" title="Loading check-in…" spin />}
+        {loading && <CentredMessage icon="progress_activity" title={text.loading} spin />}
 
         {showSimulatorOff && (
-          <CentredMessage
-            icon="chat"
-            title="Open your check-in from WhatsApp"
-            body="Today's check-in opens from the link in your WhatsApp reminder from the hospital."
-          />
+          <CentredMessage icon="chat" title={text.openFromWhatsAppTitle} body={text.openFromWhatsAppBody} />
         )}
 
         {errorMessage && (
           <CentredMessage
             icon={isTokenMode ? "link_off" : "cloud_off"}
-            title={isTokenMode ? "This link can't be opened" : "Backend unavailable"}
-            body={errorMessage}
+            title={isTokenMode ? text.linkErrorTitle : text.backendUnavailable}
+            body={isTokenMode ? `${errorMessage} ${text.linkErrorAdvice}` : errorMessage}
           />
         )}
 
@@ -331,7 +360,9 @@ function CheckInContent() {
             {stepIndex === HOME && (
               <HomeScreen
                 form={activeForm}
-                onStart={() => setStepIndex(0)}
+                text={text}
+                onStart={() => goTo(0)}
+                onLanguage={setChosenLanguage}
                 questionCount={allParameters.length}
                 stepCount={steps.length}
               />
@@ -341,9 +372,10 @@ function CheckInContent() {
               <>
                 <AppBar
                   title={steps[stepIndex].title}
+                  text={text}
                   stepIndex={stepIndex}
                   stepCount={steps.length}
-                  onBack={() => setStepIndex(stepIndex - 1)}
+                  onBack={() => goTo(stepIndex - 1)}
                 />
 
                 <main className="flex-1 overflow-y-auto px-space-md py-space-md flex flex-col gap-space-md">
@@ -351,6 +383,8 @@ function CheckInContent() {
                     <SectionStep
                       section={steps[stepIndex].section as FormSection}
                       episode={activeForm.episode}
+                      text={text}
+                      flagged={stillFlagged}
                       answers={answers}
                       onAnswer={setAnswer}
                       urgent={urgent}
@@ -358,39 +392,47 @@ function CheckInContent() {
                   )}
 
                   {steps[stepIndex].kind === "photo" && (
-                    <PhotoStep photo={photo} photoUrl={photoUrl} onPick={setPhoto} />
+                    <PhotoStep photo={photo} photoUrl={photoUrl} onPick={setPhoto} text={text} />
                   )}
 
                   {steps[stepIndex].kind === "review" && (
                     <ReviewStep
                       form={activeForm}
+                      text={text}
                       answers={answers}
                       photoUrl={photoUrl}
                       urgent={urgent}
-                      onJumpTo={setStepIndex}
+                      onJumpTo={goTo}
                       error={submitError}
                     />
                   )}
                 </main>
 
-                <BottomBar
-                  label={stepIndex === DONE - 1 ? "Send to my care team" : "Continue"}
-                  busy={submitting}
-                  onClick={() =>
-                    stepIndex === DONE - 1 ? handleSubmit() : setStepIndex(stepIndex + 1)
-                  }
-                  hint={
-                    stepIndex === DONE - 1
-                      ? `${answeredCount} of ${allParameters.length} questions answered`
-                      : undefined
-                  }
-                />
+                {skipped ? (
+                  <SkipPrompt
+                    text={text}
+                    names={skipped.map((p) => p.name).join(", ")}
+                    onAnswer={() => setSkipped(null)}
+                    onSkip={() => goTo(stepIndex + 1)}
+                  />
+                ) : (
+                  <BottomBar
+                    label={stepIndex === DONE - 1 ? text.sendToCareTeam : text.continue}
+                    sendingLabel={text.sending}
+                    busy={submitting}
+                    onClick={() => (stepIndex === DONE - 1 ? handleSubmit() : goNext())}
+                    warning={stillFlagged.size > 0 ? text.answerRequired : undefined}
+                    hint={stepIndex === DONE - 1 ? text.answeredOf(answeredCount, allParameters.length) : undefined}
+                  />
+                )}
               </>
             )}
 
             {stepIndex === DONE && receipt && (
               <DoneScreen
                 receipt={receipt}
+                text={text}
+                episode={activeForm.episode}
                 urgent={urgent.length > 0}
                 onRestart={() => setReloadNonce((n) => n + 1)}
               />
@@ -472,11 +514,13 @@ function StatusBar() {
 
 function AppBar({
   title,
+  text,
   stepIndex,
   stepCount,
   onBack,
 }: {
   title: string;
+  text: CheckInText;
   stepIndex: number;
   stepCount: number;
   onBack: () => void;
@@ -487,16 +531,14 @@ function AppBar({
         <button
           type="button"
           onClick={onBack}
-          aria-label="Go back"
+          aria-label={text.goBack}
           className="h-11 w-11 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low transition-colors cursor-pointer"
         >
           <span className="material-symbols-outlined text-[24px]">arrow_back</span>
         </button>
         <div className="flex-1">
           <h1 className="font-title-sm text-on-surface">{title}</h1>
-          <p className="font-body-sm text-on-surface-variant">
-            Step {stepIndex + 1} of {stepCount}
-          </p>
+          <p className="font-body-sm text-on-surface-variant">{text.stepOf(stepIndex + 1, stepCount)}</p>
         </div>
       </div>
       <div className="h-1 bg-surface-container-high">
@@ -514,14 +556,21 @@ function BottomBar({
   onClick,
   busy,
   hint,
+  warning,
+  sendingLabel,
 }: {
   label: string;
   onClick: () => void;
   busy?: boolean;
   hint?: string;
+  warning?: string;
+  sendingLabel?: string;
 }) {
   return (
     <div className="shrink-0 px-space-md pt-space-sm pb-space-md bg-surface-bright border-t border-outline-variant/30">
+      {warning && (
+        <p className="font-body-sm text-error text-center mb-space-sm" role="alert">{warning}</p>
+      )}
       {hint && (
         <p className="font-body-sm text-on-surface-variant text-center mb-space-sm">{hint}</p>
       )}
@@ -536,8 +585,43 @@ function BottomBar({
             progress_activity
           </span>
         )}
-        {busy ? "Sending…" : label}
+        {busy ? sendingLabel ?? label : label}
       </button>
+    </div>
+  );
+}
+
+/** Readings left blank: the patient sees what is missing and chooses to go on without them. */
+function SkipPrompt({
+  text,
+  names,
+  onAnswer,
+  onSkip,
+}: {
+  text: CheckInText;
+  names: string;
+  onAnswer: () => void;
+  onSkip: () => void;
+}) {
+  return (
+    <div className="shrink-0 px-space-md pt-space-sm pb-space-md bg-surface-bright border-t border-outline-variant/30">
+      <p className="font-body-md text-on-surface mb-space-sm" role="alert">{text.skippedPrompt(names)}</p>
+      <div className="grid grid-cols-2 gap-space-sm">
+        <button
+          type="button"
+          onClick={onAnswer}
+          className="h-12 rounded-full bg-primary text-on-primary font-title-sm cursor-pointer"
+        >
+          {text.answerThem}
+        </button>
+        <button
+          type="button"
+          onClick={onSkip}
+          className="h-12 rounded-full border border-outline-variant text-on-surface font-title-sm cursor-pointer"
+        >
+          {text.continueWithout}
+        </button>
+      </div>
     </div>
   );
 }
@@ -570,36 +654,55 @@ function CentredMessage({
 
 function HomeScreen({
   form,
+  text,
   onStart,
+  onLanguage,
   questionCount,
   stepCount,
 }: {
   form: CheckInForm;
+  text: CheckInText;
   onStart: () => void;
+  onLanguage: (language: string) => void;
   questionCount: number;
   stepCount: number;
 }) {
   return (
     <>
       <main className="flex-1 overflow-y-auto px-space-md py-space-lg flex flex-col gap-space-lg">
+        <div className="flex items-center justify-end gap-1" role="group" aria-label={text.language}>
+          <span className="material-symbols-outlined text-[18px] text-on-surface-variant mr-1">translate</span>
+          {CHECKIN_LANGUAGES.map((l) => (
+            <button
+              key={l.code}
+              type="button"
+              aria-pressed={form.language === l.code}
+              onClick={() => onLanguage(l.code)}
+              className={`px-2.5 py-1 rounded-full font-label-md border cursor-pointer ${
+                form.language === l.code
+                  ? "bg-primary text-on-primary border-transparent"
+                  : "border-outline-variant/60 text-on-surface-variant"
+              }`}
+            >
+              {l.label}
+            </button>
+          ))}
+        </div>
         <div>
-          <p className="font-body-lg text-on-surface-variant">Good morning,</p>
+          <p className="font-body-lg text-on-surface-variant">{text.greeting}</p>
           <h1 className="font-display-lg text-on-surface">{form.episode.first_name}</h1>
         </div>
 
         <section className="bg-primary text-on-primary rounded-2xl p-space-lg">
           <div className="flex items-center gap-space-xs mb-space-xs">
             <span className="material-symbols-outlined text-[20px]">calendar_today</span>
-            <span className="font-label-md uppercase tracking-wider">
-              Day {form.effective_day} after surgery
-            </span>
+            <span className="font-label-md uppercase tracking-wider">{text.dayAfterSurgery(form.effective_day)}</span>
           </div>
           <h2 className="font-headline-md mb-space-xs">
-            {form.already_submitted_today ? "You've already checked in today" : "Today's check-in is ready"}
+            {form.already_submitted_today ? text.alreadyCheckedIn : text.checkInReady}
           </h2>
           <p className="font-body-md opacity-90">
-            {questionCount} questions across {stepCount} steps. Your care team at{" "}
-            {form.episode.hospital_name} reviews every answer.
+            {text.overview(questionCount, stepCount, form.episode.hospital_name)}
           </p>
         </section>
 
@@ -610,7 +713,7 @@ function HomeScreen({
                 {s.parameters.length}
               </span>
               <div>
-                <span className="font-body-lg text-on-surface block">{sectionTitle(s.key)}</span>
+                <span className="font-body-lg text-on-surface block">{text.sections[s.key] ?? s.key}</span>
                 <span className="font-body-sm text-on-surface-variant">
                   {s.parameters.map((p) => p.name).join(", ")}
                 </span>
@@ -632,10 +735,7 @@ function HomeScreen({
         )}
       </main>
 
-      <BottomBar
-        label={form.already_submitted_today ? "Check in again" : "Start today's check-in"}
-        onClick={onStart}
-      />
+      <BottomBar label={form.already_submitted_today ? text.checkInAgain : text.startCheckIn} onClick={onStart} />
     </>
   );
 }
@@ -643,17 +743,21 @@ function HomeScreen({
 function SectionStep({
   section,
   episode,
+  text,
+  flagged,
   answers,
   onAnswer,
   urgent,
 }: {
   section: FormSection;
   episode: EpisodeContext;
+  text: CheckInText;
+  flagged: Set<string>;
   answers: Answers;
   onAnswer: (code: string, value: AnswerValue) => void;
   urgent: FormParameter[];
 }) {
-  const intro = SECTION_META[section.key]?.intro;
+  const intro = section.key === "checks" ? text.checksIntro : undefined;
 
   return (
     <>
@@ -664,7 +768,16 @@ function SectionStep({
         const onChange = (v: AnswerValue) => onAnswer(param.code, v);
 
         if (param.type === "boolean") {
-          return <YesNoQuestion key={param.code} param={param} value={value} onChange={onChange} />;
+          return (
+            <YesNoQuestion
+              key={param.code}
+              param={param}
+              value={value}
+              onChange={onChange}
+              text={text}
+              flagged={flagged.has(param.code)}
+            />
+          );
         }
 
         const isPainStyle =
@@ -674,50 +787,75 @@ function SectionStep({
           param.value_max === 10;
 
         return (
-          <QuestionCard key={param.code} param={param}>
+          <QuestionCard key={param.code} param={param} text={text} flagged={flagged.has(param.code)}>
             {isPainStyle ? (
-              <PainScale param={param} value={value} onChange={onChange} />
+              <PainScale param={param} value={value} onChange={onChange} text={text} />
             ) : param.type === "ordinal" ? (
               <ChoiceList param={param} value={value} onChange={onChange} />
             ) : (
-              <NumberStepper param={param} value={value} onChange={onChange} />
+              <NumberStepper param={param} value={value} onChange={onChange} text={text} />
             )}
           </QuestionCard>
         );
       })}
 
-      {urgent.length > 0 && <UrgentNotice flags={urgent} episode={episode} />}
+      {urgent.length > 0 && <UrgentNotice flags={urgent} episode={episode} text={text} />}
     </>
   );
 }
 
-/** Emergency services on any mobile phone in India, and in most other countries. */
-const EMERGENCY_SERVICES = "112";
-
-function UrgentNotice({ flags, episode }: { flags: FormParameter[]; episode: EpisodeContext }) {
-  // The hospital's own number once it has set one; until then, emergency services
-  // rather than a number that nobody at this hospital answers.
+/**
+ * The ward first when the hospital has set its number, with emergency services
+ * beside it; emergency services alone until then, rather than a number nobody answers.
+ */
+function CallButtons({ episode, text, light }: { episode: EpisodeContext; text: CheckInText; light?: boolean }) {
   const phone = episode.hospital_emergency_phone;
+  const primary = light
+    ? "bg-surface-container-lowest text-error"
+    : "bg-error text-on-error";
+  const secondary = light
+    ? "border border-on-error/70 text-on-error"
+    : "border border-error text-error";
+  return (
+    <div className="flex flex-col gap-space-sm">
+      {phone && (
+        <a
+          href={`tel:${phone}`}
+          className={`w-full h-12 rounded-full font-title-sm flex items-center justify-center gap-space-xs ${primary}`}
+        >
+          <span className="material-symbols-outlined text-[20px]">call</span>
+          {text.callWard}
+        </a>
+      )}
+      <a
+        href={`tel:${EMERGENCY_SERVICES}`}
+        className={`w-full h-12 rounded-full font-title-sm flex items-center justify-center gap-space-xs ${
+          phone ? secondary : primary
+        }`}
+      >
+        <span className="material-symbols-outlined text-[20px]">emergency</span>
+        {text.call112}
+      </a>
+    </div>
+  );
+}
+
+function UrgentNotice({ flags, episode, text }: { flags: FormParameter[]; episode: EpisodeContext; text: CheckInText }) {
+  const symptoms = flags
+    .map((f) => (text.locale.startsWith("en") ? f.name.toLowerCase() : f.name))
+    .join(text.and);
   return (
     <section className="bg-error text-on-error rounded-2xl p-space-md">
       <div className="flex items-center gap-space-xs mb-space-xs">
         <span className="material-symbols-outlined text-[22px]">emergency_home</span>
-        <h2 className="font-title-sm">Please call us now</h2>
+        <h2 className="font-title-sm">{text.urgentTitle}</h2>
       </div>
       <p className="font-body-md opacity-95 mb-space-md">
-        You told us about {flags.map((f) => f.name.toLowerCase()).join(" and ")}. Do not wait for
-        this check-in to be reviewed —{" "}
-        {phone
-          ? `ring ${episode.hospital_name} directly.`
-          : `call your hospital now. If you cannot reach them, call emergency services on ${EMERGENCY_SERVICES}.`}
+        {episode.hospital_emergency_phone
+          ? text.urgentWithWard(symptoms, episode.hospital_name)
+          : text.urgentNoWard(symptoms)}
       </p>
-      <a
-        href={`tel:${phone ?? EMERGENCY_SERVICES}`}
-        className="w-full h-12 rounded-full bg-surface-container-lowest text-error font-title-sm flex items-center justify-center gap-space-xs"
-      >
-        <span className="material-symbols-outlined text-[20px]">call</span>
-        {phone ? "Call the ward" : `Call emergency services (${EMERGENCY_SERVICES})`}
-      </a>
+      <CallButtons episode={episode} text={text} light />
     </section>
   );
 }
@@ -726,21 +864,21 @@ function PhotoStep({
   photo,
   photoUrl,
   onPick,
+  text,
 }: {
   photo: File | null;
   photoUrl: string | null;
   onPick: (f: File | null) => void;
+  text: CheckInText;
 }) {
   return (
     <>
-      <p className="font-body-md text-on-surface-variant">
-        Hold your phone about 30 cm from the wound in good light.
-      </p>
+      <p className="font-body-md text-on-surface-variant">{text.photoHint}</p>
 
       {photoUrl ? (
         <div className="rounded-2xl overflow-hidden border border-outline-variant/40 bg-surface-container-lowest">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={photoUrl} alt="Wound photo you selected" className="w-full h-56 object-cover" />
+          <img src={photoUrl} alt={text.photoAlt} className="w-full h-56 object-cover" />
           <div className="flex items-center justify-between p-space-sm">
             <span className="font-body-sm text-on-surface-variant truncate">{photo?.name}</span>
             <button
@@ -748,15 +886,15 @@ function PhotoStep({
               onClick={() => onPick(null)}
               className="font-label-md text-error px-2 py-1 rounded cursor-pointer hover:bg-error-container/50"
             >
-              Remove
+              {text.remove}
             </button>
           </div>
         </div>
       ) : (
         <label className="flex flex-col items-center justify-center gap-space-xs h-56 rounded-2xl border-2 border-dashed border-outline-variant bg-surface-container-lowest text-on-surface-variant cursor-pointer hover:border-primary hover:text-primary transition-colors">
           <span className="material-symbols-outlined text-[40px] text-primary">photo_camera</span>
-          <span className="font-title-sm">Take a photo</span>
-          <span className="font-body-sm">or choose one from your gallery</span>
+          <span className="font-title-sm">{text.takePhoto}</span>
+          <span className="font-body-sm">{text.orGallery}</span>
           <input
             type="file"
             accept="image/*"
@@ -771,10 +909,7 @@ function PhotoStep({
         <span className="material-symbols-outlined text-[18px] text-tertiary mt-0.5 shrink-0">
           info
         </span>
-        <p className="font-body-sm text-on-tertiary-fixed">
-          Previewed on this device only. Image upload needs object storage, which is not wired up
-          yet, so the photo is not sent with the check-in.
-        </p>
+        <p className="font-body-sm text-on-tertiary-fixed">{text.photoNotSent}</p>
       </div>
     </>
   );
@@ -782,6 +917,7 @@ function PhotoStep({
 
 function ReviewStep({
   form,
+  text,
   answers,
   photoUrl,
   urgent,
@@ -789,6 +925,7 @@ function ReviewStep({
   error,
 }: {
   form: CheckInForm;
+  text: CheckInText;
   answers: Answers;
   photoUrl: string | null;
   urgent: FormParameter[];
@@ -797,13 +934,13 @@ function ReviewStep({
 }) {
   return (
     <>
-      {urgent.length > 0 && <UrgentNotice flags={urgent} episode={form.episode} />}
+      {urgent.length > 0 && <UrgentNotice flags={urgent} episode={form.episode} text={text} />}
 
       {error && (
         <section className="bg-error-container border border-error/40 rounded-2xl p-space-md">
           <div className="flex items-center gap-space-xs mb-space-xs">
             <span className="material-symbols-outlined text-[20px] text-error">error</span>
-            <h2 className="font-title-sm text-on-error-container">Could not send</h2>
+            <h2 className="font-title-sm text-on-error-container">{text.couldNotSend}</h2>
           </div>
           <p className="font-body-sm text-on-error-container break-words">{error}</p>
         </section>
@@ -815,13 +952,13 @@ function ReviewStep({
           className="bg-surface-container-lowest rounded-2xl border border-outline-variant/40 overflow-hidden"
         >
           <div className="flex items-center justify-between px-space-md py-space-sm border-b border-outline-variant/30">
-            <h2 className="font-title-sm text-on-surface">{sectionTitle(section.key)}</h2>
+            <h2 className="font-title-sm text-on-surface">{text.sections[section.key] ?? section.key}</h2>
             <button
               type="button"
               onClick={() => onJumpTo(index)}
               className="font-label-md text-primary px-2 py-1 rounded cursor-pointer hover:bg-surface-container-low"
             >
-              Edit
+              {text.edit}
             </button>
           </div>
           <dl className="divide-y divide-outline-variant/30">
@@ -840,7 +977,7 @@ function ReviewStep({
                       missing ? "text-outline italic" : concerning ? "text-error" : "text-on-surface"
                     }`}
                   >
-                    {formatAnswer(param, value)}
+                    {formatAnswer(param, value, text)}
                   </dd>
                 </div>
               );
@@ -850,16 +987,16 @@ function ReviewStep({
       ))}
 
       <section className="bg-surface-container-lowest rounded-2xl border border-outline-variant/40 px-space-md py-space-sm">
-        <h2 className="font-title-sm text-on-surface mb-space-xs">Wound photo</h2>
+        <h2 className="font-title-sm text-on-surface mb-space-xs">{text.woundPhoto}</h2>
         {photoUrl ? (
           /* eslint-disable-next-line @next/next/no-img-element */
           <img
             src={photoUrl}
-            alt="Wound photo you selected"
+            alt={text.photoAlt}
             className="w-full h-32 object-cover rounded-xl"
           />
         ) : (
-          <span className="font-body-md text-outline italic">No photo added</span>
+          <span className="font-body-md text-outline italic">{text.noPhoto}</span>
         )}
       </section>
     </>
@@ -868,10 +1005,14 @@ function ReviewStep({
 
 function DoneScreen({
   receipt,
+  text,
+  episode,
   urgent,
   onRestart,
 }: {
   receipt: CheckInReceipt;
+  text: CheckInText;
+  episode: EpisodeContext;
   urgent: boolean;
   onRestart: () => void;
 }) {
@@ -883,26 +1024,22 @@ function DoneScreen({
 
       <div>
         <h1 className="font-headline-lg text-on-surface">
-          {receipt.duplicate ? "Already sent" : "Check-in sent"}
+          {receipt.duplicate ? text.alreadySent : text.checkInSent}
         </h1>
         <p className="font-body-lg text-on-surface-variant mt-space-xs">
           {receipt.duplicate
-            ? "This check-in had already reached us, so nothing was duplicated."
-            : `${receipt.values_recorded} answers recorded for day ${receipt.day_after_discharge}.`}
+            ? text.alreadySentBody
+            : text.answersRecorded(receipt.values_recorded, receipt.day_after_discharge)}
         </p>
         {receipt.superseded_count > 0 && (
-          <p className="font-body-md text-on-surface-variant mt-space-xs">
-            This replaces the earlier check-in you sent today.
-          </p>
+          <p className="font-body-md text-on-surface-variant mt-space-xs">{text.replacesEarlier}</p>
         )}
       </div>
 
       {urgent && (
-        <div className="w-full bg-error-container border border-error/30 rounded-xl p-space-md text-left">
-          <p className="font-body-md text-on-error-container">
-            You reported a symptom that needs attention today. If you have not spoken to the ward
-            yet, please call now.
-          </p>
+        <div className="w-full bg-error-container border border-error/30 rounded-xl p-space-md text-left flex flex-col gap-space-sm">
+          <p className="font-body-md text-on-error-container">{text.urgentDone}</p>
+          <CallButtons episode={episode} text={text} />
         </div>
       )}
 
@@ -913,18 +1050,17 @@ function DoneScreen({
             mark_chat_read
           </span>
           <p className="font-body-xs text-emerald-800 leading-relaxed">
-            {receipt.patient_message_status === "sent"
-              ? "A WhatsApp message confirming this check-in has been sent to you."
-              : "A WhatsApp message confirming this check-in will follow shortly."}
+            {receipt.patient_message_status === "sent" ? text.whatsappSent : text.whatsappQueued}
           </p>
         </div>
       )}
 
       <dl className="w-full bg-surface-container-lowest border border-outline-variant/40 rounded-xl divide-y divide-outline-variant/30 text-left">
         {[
-          ["Reference", receipt.check_in_id.slice(0, 8)],
-          ["Recorded as", receipt.source],
-          ["Received", new Date(receipt.submitted_at).toLocaleString()],
+          [text.reference, receipt.check_in_id.slice(0, 8)],
+          // Staff running the simulator need to see a synthetic check-in marked as one.
+          ...(receipt.source === "patient" ? [] : [["Recorded as", receipt.source]]),
+          [text.received, new Date(receipt.submitted_at).toLocaleString(text.locale)],
         ].map(([label, value]) => (
           <div key={label} className="flex items-center justify-between px-space-md py-2">
             <dt className="font-body-sm text-on-surface-variant">{label}</dt>
@@ -938,7 +1074,7 @@ function DoneScreen({
         onClick={onRestart}
         className="mt-auto w-full h-12 rounded-full border border-outline-variant text-primary font-title-sm cursor-pointer hover:bg-surface-container-low transition-colors"
       >
-        Start again
+        {text.startAgain}
       </button>
     </main>
   );

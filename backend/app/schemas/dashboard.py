@@ -33,6 +33,10 @@ class QueueRow(BaseModel):
     acknowledged_at: Optional[datetime] = None
     acknowledged_by_name: Optional[str] = None
     ack_window_secs: int = Field(..., description="This hospital's acknowledgement SLA")
+    unanswered: List[str] = Field(
+        default_factory=list,
+        description="Questions the check-in behind this alert left blank; blank is unknown, never 'no'",
+    )
 
     @field_validator("reasons", mode="before")
     @classmethod

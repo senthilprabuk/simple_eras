@@ -111,7 +111,7 @@ describe("which way a measure goes wrong", () => {
 
 const session = (role: string, hospitalId: number | null): Session => ({
   token: "t", expiresAt: Date.now() + 60_000, adminUserId: "u", hospitalId,
-  hospitalName: hospitalId === null ? null : "St. Mary's", fullName: "Someone", role,
+  hospitalName: hospitalId === null ? null : "Noyyal Ortho", fullName: "Someone", role,
 });
 
 describe("where each role belongs", () => {

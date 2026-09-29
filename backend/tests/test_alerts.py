@@ -6,7 +6,7 @@ from uuid import uuid4
 import httpx
 from sqlalchemy import text
 
-from tests.support import admin_id_for, create_alert, episode_for_mrn
+from tests.support import admin_id_for, create_alert, create_hospital, episode_for_mrn
 
 
 async def _alert_row(db, alert_id):
@@ -32,7 +32,7 @@ async def test_acknowledge_alert_lifecycle(client: httpx.AsyncClient, nurse_head
     data = res.json()
     assert data["alert_id"] == alert_id
     assert data["status"] == "acknowledged"
-    assert data["acknowledged_by_name"] == "Nurse Sarah Jenkins"
+    assert data["acknowledged_by_name"] == "Anitha Joseph"
 
     res = await client.post(f"/api/v1/alerts/{alert_id}/acknowledge", headers=nurse_headers)
     assert res.status_code == 409
@@ -67,8 +67,8 @@ async def test_expired_alert_cannot_be_acknowledged(client, db, nurse_headers):
 
 
 async def test_resolve_records_outcome_note_and_resolver(client, db, nurse_headers, surgeon_headers):
-    nurse_id = await admin_id_for(db, "nurse.sarah@stmarys.org")
-    surgeon_id = await admin_id_for(db, "dr.mehta@stmarys.org")
+    nurse_id = await admin_id_for(db, "anitha.joseph@noyyalortho.in")
+    surgeon_id = await admin_id_for(db, "dr.arun@noyyalortho.in")
     alert_id = await create_alert(
         db, await episode_for_mrn(db, "FX-01"), status="acknowledged",
         raised_ago=timedelta(minutes=10), acknowledged_after=timedelta(minutes=2), acknowledged_by=nurse_id,
@@ -84,7 +84,7 @@ async def test_resolve_records_outcome_note_and_resolver(client, db, nurse_heade
     assert data["status"] == "resolved"
     assert data["outcome"] == "plan_adjusted"
     assert data["outcome_note"] == "Antibiotics started, review in 48h."
-    assert data["resolved_by_name"] == "Dr. K. Mehta"
+    assert data["resolved_by_name"] == "Dr. Arun Prakash"
 
     row = await _alert_row(db, alert_id)
     assert row["status"] == "resolved"
@@ -164,3 +164,36 @@ async def test_history_carries_the_operative_side_and_a_number_to_call(client, d
         await db.execute(text("UPDATE txn.patient_episode SET operative_side = :s WHERE episode_id = :e"),
                          {"s": row["operative_side"], "e": episode_id})
         await db.commit()
+
+
+async def test_a_problem_that_worsens_escalates_its_open_alert_whatever_its_age(db):
+    """Before, an open alert older than 24 hours swallowed the worse finding and nothing escalated."""
+    from app.services.rules_engine import Evaluation, _store, reason_key_for
+
+    h = await create_hospital(db, "ESC-OLD")
+    ruleset_id = (await db.execute(
+        text("SELECT ruleset_id FROM txn.patient_episode WHERE episode_id = :e"), {"e": h.episode_id}
+    )).scalar_one()
+
+    def finding(tier):
+        return Evaluation(tier=tier, total_score=6, is_override=False,
+                          reasons=[{"name": "temp_c", "detail": "Temperature", "score": 2, "points": 6}],
+                          reason_key=reason_key_for(["temp_c"]))
+
+    _, first = await _store(db, episode_id=h.episode_id, check_in_id=None, ruleset_id=ruleset_id, day=8,
+                            result=finding("review"))
+    await db.execute(text("UPDATE txn.alert SET raised_at = now() - interval '30 hours' WHERE alert_id = :a"),
+                     {"a": first})
+
+    _, again = await _store(db, episode_id=h.episode_id, check_in_id=None, ruleset_id=ruleset_id, day=9,
+                            result=finding("review"))
+    assert again is None  # the same problem, no worse: nothing new
+
+    _, worse = await _store(db, episode_id=h.episode_id, check_in_id=None, ruleset_id=ruleset_id, day=10,
+                            result=finding("critical"))
+    assert worse == first
+    alerts = (await db.execute(
+        text("SELECT tier FROM txn.alert WHERE episode_id = :e"), {"e": h.episode_id}
+    )).scalars().all()
+    assert alerts == ["critical"]
+    await db.commit()

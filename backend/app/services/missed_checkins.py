@@ -19,7 +19,7 @@ from typing import Any, Dict
 from sqlalchemy import text
 
 from app.db.session import async_session_factory
-from app.services.rules_engine import evaluate_missed_check_in, load_ruleset
+from app.services.rules_engine import evaluate_missed_check_in, load_ruleset, retire_missed_alerts
 
 logger = logging.getLogger("eras.missed")
 
@@ -34,7 +34,11 @@ OWED_YESTERDAY = text("""
         JOIN meta.hospital h ON h.hospital_id = e.hospital_id
         WHERE e.status = 'active' AND h.is_active
     )
-    SELECT d.episode_id, d.ruleset_id, d.day
+    SELECT d.episode_id, d.ruleset_id, d.day,
+           -- a check-in since the missed day, if the patient is already back
+           (SELECT max(c.day_after_discharge) FROM txn.patient_check_in c
+            WHERE c.episode_id = d.episode_id AND c.day_after_discharge > d.day
+              AND NOT c.is_superseded) AS checked_in_since
     FROM day_for d
     WHERE d.day >= 0
       AND EXISTS (SELECT 1 FROM meta.procedure_parameter pp
@@ -74,6 +78,11 @@ async def run_missed_checkin_sweep(session_factory=None) -> Dict[str, Any]:
                 session, episode_id=row["episode_id"], ruleset_id=ruleset_id, day=row["day"],
                 ruleset=rulesets[ruleset_id],
             )
+            # The missed day is recorded either way, but a patient who has checked in
+            # since has already answered what its alert would ask, so it closes at once.
+            if alert_id is not None and row["checked_in_since"] is not None:
+                await retire_missed_alerts(session, episode_id=row["episode_id"], day=row["checked_in_since"])
+                alert_id = None
             alerts += alert_id is not None
         await session.commit()
 

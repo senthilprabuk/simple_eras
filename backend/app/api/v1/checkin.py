@@ -12,7 +12,7 @@ CHECKIN_SIMULATOR_ENABLED is set, which is for demos on seeded data.
 """
 
 from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.session import get_db
-from app.services.rules_engine import evaluate_check_in
+from app.services.rules_engine import evaluate_check_in, retire_missed_alerts
 from app.services.magic_token import InvalidCheckInLink, validate_magic_token
 from app.services.patient_messages import (
     deliver_message,
@@ -155,6 +155,9 @@ async def get_checkin_form(
         le=365,
         description="Override the post-op day to preview an earlier or later stage of recovery",
     ),
+    lang: Optional[Literal["en", "ta", "hi"]] = Query(
+        None, description="Language for the questions; the patient's own language when omitted"
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -183,19 +186,23 @@ async def get_checkin_form(
             detail="Either episode_id or token is required",
         )
 
+    # Questions, names and options in the patient's language where a translation
+    # exists, else in English.
+    language = lang or episode["language_code"] or "en"
+
     params_result = await db.execute(
         text(
             """
             SELECT
                 p.parameter_id,
                 p.parameter_code,
-                p.parameter_name,
+                COALESCE(p.parameter_name_i18n ->> :lang, p.parameter_name) AS parameter_name,
                 p.parameter_type,
                 p.unit,
                 p.value_min,
                 p.value_max,
                 p.decimal_places,
-                pp.question_text,
+                COALESCE(pp.question_text_i18n ->> :lang, pp.question_text) AS question_text,
                 pp.display_section,
                 pp.display_order,
                 pp.is_mandatory,
@@ -209,7 +216,7 @@ async def get_checkin_form(
             ORDER BY pp.display_order
             """
         ),
-        {"ruleset_id": episode["ruleset_id"], "day": effective_day},
+        {"ruleset_id": episode["ruleset_id"], "day": effective_day, "lang": language},
     )
     rows = params_result.mappings().all()
 
@@ -219,13 +226,14 @@ async def get_checkin_form(
         opt_result = await db.execute(
             text(
                 """
-                SELECT parameter_id, option_code, option_label, ordinal_rank
+                SELECT parameter_id, option_code,
+                       COALESCE(option_label_i18n ->> :lang, option_label) AS option_label, ordinal_rank
                 FROM meta.parameter_option
                 WHERE parameter_id = ANY(:ids)
                 ORDER BY parameter_id, ordinal_rank
                 """
             ),
-            {"ids": ordinal_ids},
+            {"ids": ordinal_ids, "lang": language},
         )
         for opt in opt_result.mappings().all():
             options_by_param.setdefault(opt["parameter_id"], []).append(
@@ -289,6 +297,8 @@ async def get_checkin_form(
         ruleset_id=episode["ruleset_id"],
         effective_day=effective_day,
         simulated=is_simulated,
+        language=language,
+        patient_language=episode["language_code"] or "en",
         already_submitted_today=submitted.first() is not None,
         sections=sections,
     )
@@ -467,6 +477,11 @@ async def submit_checkin(payload: CheckInSubmit, db: AsyncSession = Depends(get_
             for v in payload.values
         },
     )
+
+    # The patient is back, so an open missed-check-in alert has nothing left to ask.
+    # A simulated day is not the patient checking in, and leaves real alerts alone.
+    if not payload.simulated:
+        await retire_missed_alerts(db, episode_id=payload.episode_id, day=row["day_after_discharge"])
 
     # Only a submission made through the patient's own link messages them back:
     # the simulator can pick any episode and must never reach a real phone.

@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
 """
-ERAS Clinical Remote Monitoring - Demo Seed Script
+ERAS demo seed: a hospital that looks like a working ward, not a test bench.
+
+Run after db/seed/02_fixtures.sql, which rebuilds the FX-* patients at post-op
+day 21; `.claude/skills/run-simple-eras/app.sh reset-demo` runs both. Alert times
+are relative to now, so seed just before a demo: an hour later today's open
+alerts are past their 15-minute window and the dashboard reads as though nobody
+responded.
+
 Populates:
-  1. Hospital branding ("St. Mary's Orthopedic Center", Coimbatore)
-  2. 3 Hospital Admin Accounts (Nurse, Surgeon, Superadmin)
-  3. Clinical evaluations & alerts across twelve of the fixture patients.
-     Reason names are the ruleset's own signal names, not free text: the
-     alerts screen groups them by the complication they point at, and an
-     invented name silently lands in "other".
-     - 1 Emergency Alert (FX-03 Sudden Clot)
-     - 2 Critical Alerts (FX-02 Slow Burn, FX-07 Combination Creep)
-     - 2 Review Alerts (FX-08 Early Low Fever, FX-12 Mobility Drop)
-     - 1 Missed Check-in Alert (FX-06 Drop Out)
-     - 6 Quiet Cohort Normal Patients (FX-01, FX-04, FX-05, FX-09, FX-11, FX-13)
+  1. The hospital, Noyyal Orthopaedic Centre in Coimbatore: a 15-minute
+     acknowledgement window, a demo ward number, and its WhatsApp helpline name.
+  2. Clinicians: a nurse, a surgeon and a superadmin, plus the platform app admin.
+  3. The past week's alerts, each acknowledged and resolved with an outcome, so
+     acknowledgement compliance reads like a ward that answers its alerts.
+  4. Today's queue: 1 emergency, 2 critical, 2 review (acknowledged), 1 missed.
+  5. Normal evaluations for the quiet cohort.
+
+Reason names are the ruleset's own signal names, so the alerts screen groups
+them by complication, and reason keys come from the engine's reason_key_for,
+so a later check-in reporting the same problem joins the seeded alert instead
+of opening a second one.
 """
 
 import asyncio
@@ -21,297 +29,232 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
+
 from sqlalchemy import text
 
 # Ensure backend directory is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.db.session import async_session_factory
 from app.core.security import get_password_hash
+from app.db.session import async_session_factory
+from app.services.rules_engine import reason_key_for
 
+HOSPITAL_NAME = "Noyyal Orthopaedic Centre"
+HELPLINE_NAME = "Noyyal Ortho Helpline"
+# Demo only: no Indian subscriber number starts with 0, so the check-in's
+# "Call the ward" button dials a number that reaches nobody.
+DEMO_WARD_NUMBER = "+914220000000"
+PASSWORD = "password123"
+
+NURSE = ("anitha.joseph@noyyalortho.in", "Anitha Joseph", "admin")
+SURGEON = ("dr.arun@noyyalortho.in", "Dr. Arun Prakash", "admin")
+SUPERADMIN = ("admin@noyyalortho.in", "Vasanth Raj", "superadmin")
 APP_ADMIN_EMAIL = "appadmin@eras.local"
+
+# The past week, oldest first: (MRN, days ago, post-op day, tier, reasons,
+# minutes to acknowledge, outcome, note). One of the fourteen was acknowledged
+# late, as happens on a real ward.
+HISTORY = [
+    ("FX-02", 6, 15, "review", [("temp_c", "Temperature 37.9 °C", 1, 3)], 6, "reassured",
+     "Taking paracetamol; to recheck in the evening"),
+    ("FX-11", 6, 15, "critical", [("hr", "Pulse 118, 32 above discharge", 3, 2), ("pain", "Pain 8 of 10", 2, 2)], 4,
+     "plan_adjusted", "Analgesia increased; pulse settled on repeat"),
+    ("FX-05", 5, 16, "review", [("pain_rising", "Pain up 3 points on this week's average", 2, 2)], 9, "reassured", None),
+    ("FX-14", 5, 16, "review", [("slow_burn", "Temperature rising slowly for five days", 2, 2)], 7, "same_day_review",
+     "Seen in clinic; wound clean"),
+    ("FX-07", 4, 17, "review", [("knee_bend", "Knee bend still limited to chair height", 2, 1)], 11, "plan_adjusted",
+     "Physiotherapy visits increased"),
+    ("FX-09", 4, 17, "review", [("drainage", "Fluid still leaking from the wound", 2, 2)], 5, "same_day_review",
+     "Dressing changed; no signs of infection"),
+    ("FX-04", 3, 18, "critical", [("calf_pain", "Calf more swollen than the other leg", 3, 3)], 3,
+     "same_day_review", "Doppler scan clear of clot"),
+    ("FX-15", 3, 18, "review", [("pain", "Pain 7 of 10", 2, 2)], 22, "reassured", "Reached on the second call"),
+    ("FX-12", 2, 19, "review", [("mobility_regression", "900 steps, below the week's best of 1,200", 1, 1)], 8,
+     "reassured", None),
+    ("FX-02", 2, 19, "critical", [("chills", "Shivering and chills overnight", 3, 3), ("temp_c", "Temperature 38.3 °C", 2, 3)],
+     2, "same_day_review", "Blood tests sent; started on antibiotics"),
+    ("FX-11", 1, 20, "review", [("pain", "Pain 6 of 10", 2, 2)], 6, "reassured", None),
+    ("FX-13", 1, 20, "review", [("weight_bear", "Harder to put weight on the operated leg", 2, 3)], 10, "plan_adjusted",
+     "Walking frame for another week"),
+    ("FX-05", 1, 20, "review", [("temp_c", "Temperature 37.8 °C", 1, 3)], 7, "reassured", None),
+    ("FX-14", 1, 20, "critical", [("slow_burn", "Temperature rising slowly for six days", 2, 2),
+                                  ("pain_rising", "Pain up 3 points on this week's average", 2, 2)], 4,
+     "same_day_review", "Aspiration booked"),
+]
+
+
+def _reasons(signals):
+    """(name, detail, score, weight) as the engine stores them: worst first, points = score x weight."""
+    ranked = sorted(signals, key=lambda s: (s[2] * s[3], s[2]), reverse=True)
+    return [{"name": n, "detail": d, "score": sc, "points": sc * w} for n, d, sc, w in ranked]
+
+
+async def _alert(session, patient, *, day, tier, signals, raised_at, total_score, is_override=False, check_in=True,
+                 acknowledged_at=None, acknowledged_by=None, resolved_at=None, resolved_by=None,
+                 outcome=None, note=None):
+    reasons = _reasons(signals)
+    key = reason_key_for(r["name"] for r in reasons)
+    evaluation_id = (await session.execute(text("""
+        INSERT INTO txn.check_in_evaluation (
+            episode_id, ruleset_id, day_after_discharge, tier, total_score, is_override,
+            reasons, reason_key, evaluated_at, coverage
+        ) VALUES (:e, :r, :d, :tier, :total, :override, CAST(:reasons AS jsonb), :key, :at, :coverage)
+        RETURNING evaluation_id
+    """), {
+        "e": patient["episode_id"], "r": patient["ruleset_id"], "d": day, "tier": tier, "total": total_score,
+        "override": is_override, "reasons": json.dumps(reasons), "key": key, "at": raised_at,
+        # A missed day has nothing answered; seeded check-ins answered everything.
+        "coverage": 1.0 if check_in else 0.0,
+    })).scalar_one()
+    status = "resolved" if resolved_at else "acknowledged" if acknowledged_at else "open"
+    await session.execute(text("""
+        INSERT INTO txn.alert (
+            alert_id, episode_id, evaluation_id, tier, reason_key, status, raised_at, notified_at,
+            acknowledged_at, acknowledged_by, resolved_at, resolved_by, outcome, outcome_note
+        ) VALUES (
+            :a, :e, :ev, :tier, :key, :status, :raised_at, :raised_at,
+            :ack_at, :ack_by, :resolved_at, :resolved_by, :outcome, :note
+        )
+    """), {
+        "a": uuid4(), "e": patient["episode_id"], "ev": evaluation_id, "tier": tier, "key": key, "status": status,
+        "raised_at": raised_at, "ack_at": acknowledged_at, "ack_by": acknowledged_by,
+        "resolved_at": resolved_at, "resolved_by": resolved_by, "outcome": outcome, "note": note,
+    })
+
 
 async def seed_demo(session_factory=None):
     print("================================================================")
-    print("        ERAS DEMO CLINICAL SEED SCRIPT (PAGE 1)                ")
+    print("        ERAS DEMO CLINICAL SEED SCRIPT                          ")
     print("================================================================\n")
 
     now = datetime.now(timezone.utc)
 
     async with (session_factory or async_session_factory)() as session:
-        # 1. Update Hospital 1 name
-        print("[*] 1. Updating hospital details for ID 1:")
+        print("[*] 1. Hospital:")
         await session.execute(text("""
             UPDATE meta.hospital
-            SET hospital_name = :h_name,
-                ack_window_secs = 900
-            WHERE hospital_id = 1;
-        """), {"h_name": "St. Mary's Orthopedic Center"})
-        print("  [+] Hospital 1 updated: St. Mary's Orthopedic Center (15m SLA Window).")
+            SET hospital_name = :name, ack_window_secs = 900, emergency_phone_e164 = :ward
+            WHERE hospital_id = 1
+        """), {"name": HOSPITAL_NAME, "ward": DEMO_WARD_NUMBER})
+        await session.execute(text("""
+            UPDATE meta.hospital_whatsapp
+            SET display_name = :helpline, verify_token = 'eras_noyyal_verify_2026'
+            WHERE hospital_id = 1
+        """), {"helpline": HELPLINE_NAME})
+        print(f"  [+] {HOSPITAL_NAME}: 15-minute window, demo ward number, WhatsApp helpline '{HELPLINE_NAME}'.")
 
-        # 2. Seed Admin Users
-        print("\n[*] 2. Seeding administrator accounts in meta.admin_user:")
-        raw_password = "password123"
-        hashed_password = get_password_hash(raw_password)
-
-        admin_sarah_id = uuid4()
-        admin_mehta_id = uuid4()
-        admin_super_id = uuid4()
-
-        admins_to_seed = [
-            (admin_sarah_id, 1, "nurse.sarah@stmarys.org", hashed_password, "Nurse Sarah Jenkins", "admin"),
-            (admin_mehta_id, 1, "dr.mehta@stmarys.org", hashed_password, "Dr. K. Mehta", "admin"),
-            (admin_super_id, 1, "admin@stmarys.org", hashed_password, "System Superadmin", "superadmin"),
-        ]
-
-        # Clean existing test admins if any
-        await session.execute(text("DELETE FROM meta.admin_user WHERE hospital_id = 1;"))
-
-        for aid, hid, email, pwd, name, role in admins_to_seed:
-            await session.execute(text("""
-                INSERT INTO meta.admin_user (
-                    admin_user_id, hospital_id, email, hashed_password, full_name, role, is_active
-                ) VALUES (
-                    :aid, :hid, :email, :pwd, :name, :role, true
-                );
-            """), {"aid": aid, "hid": hid, "email": email, "pwd": pwd, "name": name, "role": role})
-            print(f"  [+] Created {role.upper()}: {name:<22} | {email}")
+        print("\n[*] 2. Clinicians:")
+        hashed = get_password_hash(PASSWORD)
+        await session.execute(text("DELETE FROM meta.admin_user WHERE hospital_id = 1"))
+        staff = {}
+        for email, name, role in (NURSE, SURGEON, SUPERADMIN):
+            staff[email] = (await session.execute(text("""
+                INSERT INTO meta.admin_user (hospital_id, email, hashed_password, full_name, role, is_active)
+                VALUES (1, :email, :pwd, :name, :role, true)
+                RETURNING admin_user_id
+            """), {"email": email, "pwd": hashed, "name": name, "role": role})).scalar_one()
+            print(f"  [+] {role.upper():<10} {name:<18} | {email}")
+        nurse, surgeon = staff[NURSE[0]], staff[SURGEON[0]]
 
         # The platform's app admin manages hospitals and rulesets and belongs to no hospital.
         await session.execute(text("DELETE FROM meta.admin_user WHERE email = :email AND hospital_id IS NULL"),
                               {"email": APP_ADMIN_EMAIL})
         await session.execute(text("""
             INSERT INTO meta.admin_user (hospital_id, email, hashed_password, full_name, role, is_active)
-            VALUES (NULL, :email, :pwd, 'Platform App Admin', 'app_admin', true);
-        """), {"email": APP_ADMIN_EMAIL, "pwd": hashed_password})
-        print(f"  [+] Created APP_ADMIN: {'Platform App Admin':<22} | {APP_ADMIN_EMAIL}")
+            VALUES (NULL, :email, :pwd, 'Platform App Admin', 'app_admin', true)
+        """), {"email": APP_ADMIN_EMAIL, "pwd": hashed})
+        print(f"  [+] APP_ADMIN  Platform App Admin | {APP_ADMIN_EMAIL}")
 
-        # 3. Retrieve existing fixture patients & episodes
-        print("\n[*] 3. Fetching existing fixture patients and episodes:")
-        pt_res = await session.execute(text("""
-            SELECT p.patient_id, p.mrn, p.patient_name, e.episode_id, e.ruleset_id
+        patients = {r["mrn"]: r for r in (await session.execute(text("""
+            SELECT p.mrn, p.patient_name, e.episode_id, e.ruleset_id
             FROM txn.patient p
             JOIN txn.patient_episode e ON e.patient_id = p.patient_id
             WHERE p.hospital_id = 1
-            ORDER BY p.mrn;
-        """))
-        patient_rows = pt_res.mappings().all()
-        patient_map = {r["mrn"]: r for r in patient_rows}
-        print(f"  [+] Found {len(patient_map)} fixture patients mapped to active episodes.")
+        """))).mappings().all()}
 
-        # Clean prior alerts, notifications, and evaluations to ensure fresh repeatable state
-        print("\n[*] 4. Resetting evaluations and alerts for fresh demonstration:")
-        await session.execute(text("DELETE FROM txn.alert_notification;"))
-        await session.execute(text("DELETE FROM txn.alert;"))
-        await session.execute(text("DELETE FROM txn.check_in_evaluation;"))
-        print("  [+] Prior evaluations and alerts cleared.")
+        await session.execute(text("DELETE FROM txn.alert_notification"))
+        await session.execute(text("DELETE FROM txn.alert"))
+        await session.execute(text("DELETE FROM txn.check_in_evaluation"))
 
-        # 5. Populate Evaluations and Prioritized Alerts
-        print("\n[*] 5. Seeding clinical alerts across all severity tiers:")
+        print("\n[*] 3. The past week's alerts, acknowledged and resolved:")
+        on_time = 0
+        for i, (mrn, days_ago, day, tier, signals, ack_minutes, outcome, note) in enumerate(HISTORY):
+            if mrn not in patients:
+                continue
+            raised_at = now - timedelta(days=days_ago, hours=3 + i % 5)
+            acknowledged_at = raised_at + timedelta(minutes=ack_minutes)
+            await _alert(
+                session, patients[mrn], day=day, tier=tier, signals=signals, raised_at=raised_at,
+                total_score=sum(sc * w for _, _, sc, w in signals),
+                acknowledged_at=acknowledged_at, acknowledged_by=nurse if i % 3 else surgeon,
+                resolved_at=acknowledged_at + timedelta(minutes=20 + i % 4 * 10),
+                resolved_by=surgeon if outcome == "same_day_review" else nurse, outcome=outcome, note=note,
+            )
+            on_time += ack_minutes <= 15
+        print(f"  [+] {len(HISTORY)} alerts over six days; {on_time} acknowledged within 15 minutes.")
 
-        # --- ROW 1: EMERGENCY (FX-03 Sudden Clot / H. Thorne equivalent) ---
-        p = patient_map.get("FX-03")
-        if p:
-            eval_id = uuid4()
-            alert_id = uuid4()
-            raised_at = now - timedelta(minutes=3)
-            reasons = [
-                {"name": "calf_pain", "score": 3, "weight": 3, "detail": "Calf swelling & acute sharp pain"},
-                {"name": "breathless", "score": 3, "weight": 0, "detail": "Newly short of breath"}
-            ]
-            await session.execute(text("""
-                INSERT INTO txn.check_in_evaluation (
-                    evaluation_id, episode_id, ruleset_id, day_after_discharge,
-                    tier, total_score, is_override, reasons, reason_key, evaluated_at
-                ) VALUES (
-                    :evid, :eid, :rid, 4, 'emergency', 18, true, CAST(:reasons AS jsonb), 'reason_dvt_clot', :raised_at
-                );
-            """), {"evid": eval_id, "eid": p["episode_id"], "rid": p["ruleset_id"], "reasons": json.dumps(reasons), "raised_at": raised_at})
+        print("\n[*] 4. Today's queue:")
+        today = [
+            ("FX-03", "emergency", 21, 3, [("calf_pain", "Calf swelling and acute sharp pain", 3, 3),
+                                          ("breathless", "Newly short of breath", 3, 3)], True, None),
+            ("FX-02", "critical", 21, 11, [("fever_returned", "Fever returned: 38.6 °C", 3, 3),
+                                          ("drainage", "Fluid leaking from the wound", 2, 2)], True, None),
+            ("FX-07", "critical", 21, 2, [("pain", "Pain 6 of 10", 2, 2), ("hr", "Pulse 104, 22 above discharge", 2, 2),
+                                          ("temp_c", "Temperature 37.9 °C", 1, 3)], False, None),
+            ("FX-08", "review", 21, 42, [("temp_c", "Temperature 38.1 °C", 2, 3)], False, (8, surgeon)),
+            ("FX-12", "review", 21, 75, [("mobility_regression", "400 steps, below half of this patient's best of 1,200",
+                                          2, 1)], False, (9, nurse)),
+        ]
+        for mrn, tier, day, minutes_ago, signals, override, ack in today:
+            raised_at = now - timedelta(minutes=minutes_ago)
+            await _alert(
+                session, patients[mrn], day=day, tier=tier, signals=signals, raised_at=raised_at,
+                total_score=sum(sc * w for _, _, sc, w in signals), is_override=override,
+                acknowledged_at=raised_at + timedelta(minutes=ack[0]) if ack else None,
+                acknowledged_by=ack[1] if ack else None,
+            )
+            state = f"acknowledged after {ack[0]} min" if ack else "open"
+            print(f"  [+] {tier.upper():<10} {mrn} {patients[mrn]['patient_name']}: raised {minutes_ago} min ago, {state}")
 
-            await session.execute(text("""
-                INSERT INTO txn.alert (
-                    alert_id, episode_id, evaluation_id, tier, reason_key, status, raised_at, notified_at
-                ) VALUES (
-                    :aid, :eid, :evid, 'emergency', 'reason_dvt_clot', 'open', :raised_at, :raised_at
-                );
-            """), {"aid": alert_id, "eid": p["episode_id"], "evid": eval_id, "raised_at": raised_at})
-            print(f"  [+] [EMERGENCY]  {p['mrn']} ({p['patient_name']}): Calf swelling & Suspected DVT (3m ago, open)")
+        # Suresh stopped checking in after day 5. The sweep raises the same problem
+        # under the same reason key, so it joins this alert rather than opening another.
+        # The nurse acknowledged it and is trying to reach him.
+        missed_at = now - timedelta(hours=2)
+        await _alert(
+            session, patients["FX-06"], day=6, tier="missed", check_in=False,
+            signals=[("missed_check_in", "No check-in received since day 5", 0, 0)],
+            raised_at=missed_at, total_score=0,
+            acknowledged_at=missed_at + timedelta(minutes=6), acknowledged_by=nurse,
+        )
+        print(f"  [+] MISSED     FX-06 {patients['FX-06']['patient_name']}: no check-in since day 5, acknowledged after 6 min")
 
-        # --- ROW 2: CRITICAL (FX-02 Slow Burn / M. Vance equivalent - Near SLA Breach) ---
-        p = patient_map.get("FX-02")
-        if p:
-            eval_id = uuid4()
-            alert_id = uuid4()
-            raised_at = now - timedelta(minutes=11)
-            reasons = [
-                {"name": "drainage", "score": 2, "weight": 2, "detail": "Wound incision exudate reported"},
-                {"name": "fever_returned", "score": 3, "weight": 3, "detail": "Fever returned: 38.6°C"}
-            ]
-            await session.execute(text("""
-                INSERT INTO txn.check_in_evaluation (
-                    evaluation_id, episode_id, ruleset_id, day_after_discharge,
-                    tier, total_score, is_override, reasons, reason_key, evaluated_at
-                ) VALUES (
-                    :evid, :eid, :rid, 2, 'critical', 15, true, CAST(:reasons AS jsonb), 'reason_fever_drainage', :raised_at
-                );
-            """), {"evid": eval_id, "eid": p["episode_id"], "rid": p["ruleset_id"], "reasons": json.dumps(reasons), "raised_at": raised_at})
-
-            await session.execute(text("""
-                INSERT INTO txn.alert (
-                    alert_id, episode_id, evaluation_id, tier, reason_key, status, raised_at, notified_at
-                ) VALUES (
-                    :aid, :eid, :evid, 'critical', 'reason_fever_drainage', 'open', :raised_at, :raised_at
-                );
-            """), {"aid": alert_id, "eid": p["episode_id"], "evid": eval_id, "raised_at": raised_at})
-            print(f"  [+] [CRITICAL]   {p['mrn']} ({p['patient_name']}): Wound drainage & Fever returned (11m ago, 4m SLA remains)")
-
-        # --- ROW 3: CRITICAL (FX-07 Combination Creep / R. Nair equivalent - Newly Raised) ---
-        p = patient_map.get("FX-07")
-        if p:
-            eval_id = uuid4()
-            alert_id = uuid4()
-            raised_at = now - timedelta(minutes=2)
-            reasons = [
-                {"name": "knee_bend", "score": 2, "weight": 2, "detail": "Persistent extension block >15°"},
-                {"name": "pain", "score": 2, "weight": 2, "detail": "Severe night pain flare"}
-            ]
-            await session.execute(text("""
-                INSERT INTO txn.check_in_evaluation (
-                    evaluation_id, episode_id, ruleset_id, day_after_discharge,
-                    tier, total_score, is_override, reasons, reason_key, evaluated_at
-                ) VALUES (
-                    :evid, :eid, :rid, 9, 'critical', 14, false, CAST(:reasons AS jsonb), 'reason_extension_pain', :raised_at
-                );
-            """), {"evid": eval_id, "eid": p["episode_id"], "rid": p["ruleset_id"], "reasons": json.dumps(reasons), "raised_at": raised_at})
-
-            await session.execute(text("""
-                INSERT INTO txn.alert (
-                    alert_id, episode_id, evaluation_id, tier, reason_key, status, raised_at, notified_at
-                ) VALUES (
-                    :aid, :eid, :evid, 'critical', 'reason_extension_pain', 'open', :raised_at, :raised_at
-                );
-            """), {"aid": alert_id, "eid": p["episode_id"], "evid": eval_id, "raised_at": raised_at})
-            print(f"  [+] [CRITICAL]   {p['mrn']} ({p['patient_name']}): Extension block & Night pain flare (2m ago, open)")
-
-        # --- ROW 4: REVIEW (FX-08 Early Low Fever / D. Gallagher equivalent - Acknowledged) ---
-        p = patient_map.get("FX-08")
-        if p:
-            eval_id = uuid4()
-            alert_id = uuid4()
-            raised_at = now - timedelta(minutes=42)
-            ack_at = now - timedelta(minutes=25)
-            reasons = [
-                # Was "erythema", a measure migration 002 removed from the
-                # parameter registry, so the engine can no longer produce it.
-                # FX-08 is the early-low-fever fixture, so its alert says so.
-                {"name": "temp_c", "score": 2, "weight": 3, "detail": "Temperature 38.1 °C on day 7"}
-            ]
-            await session.execute(text("""
-                INSERT INTO txn.check_in_evaluation (
-                    evaluation_id, episode_id, ruleset_id, day_after_discharge,
-                    tier, total_score, is_override, reasons, reason_key, evaluated_at
-                ) VALUES (
-                    :evid, :eid, :rid, 7, 'review', 6, false, CAST(:reasons AS jsonb), 'reason_low_fever', :raised_at
-                );
-            """), {"evid": eval_id, "eid": p["episode_id"], "rid": p["ruleset_id"], "reasons": json.dumps(reasons), "raised_at": raised_at})
-
-            await session.execute(text("""
-                INSERT INTO txn.alert (
-                    alert_id, episode_id, evaluation_id, tier, reason_key, status, raised_at, notified_at, acknowledged_at, acknowledged_by
-                ) VALUES (
-                    :aid, :eid, :evid, 'review', 'reason_low_fever', 'acknowledged', :raised_at, :raised_at, :ack_at, :ack_by
-                );
-            """), {"aid": alert_id, "eid": p["episode_id"], "evid": eval_id, "raised_at": raised_at, "ack_at": ack_at, "ack_by": admin_mehta_id})
-            print(f"  [+] [REVIEW]     {p['mrn']} ({p['patient_name']}): Temperature 38.1 on day 7 (Ack by Dr. Mehta)")
-
-        # --- ROW 5: REVIEW (FX-12 Mobility Drop / A. Chen equivalent - Acknowledged) ---
-        p = patient_map.get("FX-12")
-        if p:
-            eval_id = uuid4()
-            alert_id = uuid4()
-            raised_at = now - timedelta(minutes=75)
-            ack_at = now - timedelta(minutes=50)
-            reasons = [
-                # FX-12 is the mobility-drop fixture: its steps halve from a
-                # personal best at day 12, which is what the ruleset watches for.
-                {"name": "mobility_regression", "score": 2, "weight": 1, "detail": "400 steps, below half of this patient's best of 1200"}
-            ]
-            await session.execute(text("""
-                INSERT INTO txn.check_in_evaluation (
-                    evaluation_id, episode_id, ruleset_id, day_after_discharge,
-                    tier, total_score, is_override, reasons, reason_key, evaluated_at
-                ) VALUES (
-                    :evid, :eid, :rid, 21, 'review', 6, false, CAST(:reasons AS jsonb), 'reason_mobility_drop', :raised_at
-                );
-            """), {"evid": eval_id, "eid": p["episode_id"], "rid": p["ruleset_id"], "reasons": json.dumps(reasons), "raised_at": raised_at})
-
-            await session.execute(text("""
-                INSERT INTO txn.alert (
-                    alert_id, episode_id, evaluation_id, tier, reason_key, status, raised_at, notified_at, acknowledged_at, acknowledged_by
-                ) VALUES (
-                    :aid, :eid, :evid, 'review', 'reason_mobility_drop', 'acknowledged', :raised_at, :raised_at, :ack_at, :ack_by
-                );
-            """), {"aid": alert_id, "eid": p["episode_id"], "evid": eval_id, "raised_at": raised_at, "ack_at": ack_at, "ack_by": admin_sarah_id})
-            print(f"  [+] [REVIEW]     {p['mrn']} ({p['patient_name']}): Steps halved from personal best (Ack by Nurse Sarah)")
-
-        # --- ROW 6: MISSED (FX-06 Drop Out / B. Kowalski equivalent - Evaluated Today) ---
-        p = patient_map.get("FX-06")
-        if p:
-            eval_id = uuid4()
-            alert_id = uuid4()
-            raised_at = now - timedelta(hours=2)
-            reasons = [
-                {"name": "missed_check_in", "score": 2, "weight": 2, "detail": "No check-in for 2 expected cycles (WhatsApp inactive 18h)"}
-            ]
-            # check_in_id is NULL for synthetic missed check-in evaluation
-            await session.execute(text("""
-                INSERT INTO txn.check_in_evaluation (
-                    evaluation_id, check_in_id, episode_id, ruleset_id, day_after_discharge,
-                    tier, total_score, is_override, reasons, reason_key, evaluated_at
-                ) VALUES (
-                    :evid, NULL, :eid, :rid, 5, 'missed', 0, false, CAST(:reasons AS jsonb), 'reason_missed_dropout', :raised_at
-                );
-            """), {"evid": eval_id, "eid": p["episode_id"], "rid": p["ruleset_id"], "reasons": json.dumps(reasons), "raised_at": now})
-
-            await session.execute(text("""
-                INSERT INTO txn.alert (
-                    alert_id, episode_id, evaluation_id, tier, reason_key, status, raised_at, notified_at
-                ) VALUES (
-                    :aid, :eid, :evid, 'missed', 'reason_missed_dropout', 'open', :raised_at, :raised_at
-                );
-            """), {"aid": alert_id, "eid": p["episode_id"], "evid": eval_id, "raised_at": raised_at})
-            print(f"  [+] [MISSED]     {p['mrn']} ({p['patient_name']}): 2 Overdue cycles / Inactive 18h (Evaluated today)")
-
-        # --- QUIET COHORT (NORMAL TIER: FX-01, FX-04, FX-05, FX-09, FX-11, FX-13) ---
-        quiet_cohort = ["FX-01", "FX-04", "FX-05", "FX-09", "FX-11", "FX-13"]
-        for mrn in quiet_cohort:
-            p = patient_map.get(mrn)
+        print("\n[*] 5. Quiet cohort:")
+        quiet = ["FX-01", "FX-04", "FX-05", "FX-09", "FX-11", "FX-13"]
+        for mrn in quiet:
+            p = patients.get(mrn)
             if p:
-                eval_id = uuid4()
-                reasons = [{"name": "normal_trajectory", "detail": "Vitals and milestones within expected corridor"}]
                 await session.execute(text("""
                     INSERT INTO txn.check_in_evaluation (
-                        evaluation_id, episode_id, ruleset_id, day_after_discharge,
-                        tier, total_score, is_override, reasons, reason_key, evaluated_at
-                    ) VALUES (
-                        :evid, :eid, :rid, 8, 'normal', 2, false, CAST(:reasons AS jsonb), 'normal_key', :now
-                    );
-                """), {"evid": eval_id, "eid": p["episode_id"], "rid": p["ruleset_id"], "reasons": json.dumps(reasons), "now": now})
-        print(f"  [+] [NORMAL]     {len(quiet_cohort)} Quiet Cohort patients initialized (No alerts raised).")
+                        episode_id, ruleset_id, day_after_discharge, tier, total_score, is_override,
+                        reasons, reason_key, evaluated_at, coverage
+                    ) VALUES (:e, :r, 21, 'normal', 0, false, '[]'::jsonb, 'none', :now, 1.0)
+                """), {"e": p["episode_id"], "r": p["ruleset_id"], "now": now})
+        print(f"  [+] {len(quiet)} patients recovering as expected (no alerts).")
 
         await session.commit()
 
     print("\n================================================================")
     print("                    SEEDING COMPLETE                            ")
     print("================================================================")
-    print("Hospital:       St. Mary's Orthopedic Center (ID: 1, Code: CBE-01)")
-    print("Active Cohort:  12 Enrolled Patients (6 Alerts: 1 Emergency, 2 Critical, 2 Review, 1 Missed, 6 Normal)")
-    print("\nDemo Login Credentials:")
-    print("  1. Nurse Admin:   nurse.sarah@stmarys.org  |  password123")
-    print("  2. Surgeon Admin: dr.mehta@stmarys.org     |  password123")
-    print("  3. Superadmin:    admin@stmarys.org        |  password123")
-    print(f"  4. App Admin:     {APP_ADMIN_EMAIL:<24} |  password123   (opens /app_admin)")
+    print(f"Hospital:       {HOSPITAL_NAME} (ID: 1, Code: CBE-01)")
+    print("Today's queue:  1 emergency, 2 critical, 2 review, 1 missed; 6 patients recovering normally")
+    print(f"\nDemo logins (password {PASSWORD}):")
+    print(f"  1. Nurse:       {NURSE[0]:<30} {NURSE[1]}")
+    print(f"  2. Surgeon:     {SURGEON[0]:<30} {SURGEON[1]}")
+    print(f"  3. Superadmin:  {SUPERADMIN[0]:<30} {SUPERADMIN[1]}")
+    print(f"  4. App Admin:   {APP_ADMIN_EMAIL:<30} opens /app_admin")
     print("================================================================\n")
+
 
 if __name__ == "__main__":
     asyncio.run(seed_demo())

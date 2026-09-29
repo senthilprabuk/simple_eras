@@ -17,14 +17,14 @@ NEW = {"email": "New.Nurse@Example.org", "full_name": "New Nurse", "role": "admi
 async def test_roster_lists_the_hospitals_clinicians_without_secrets(client, nurse_headers):
     roster = (await client.get("/api/v1/clinicians", headers=nurse_headers)).json()
     emails = {c["email"] for c in roster}
-    assert {"nurse.sarah@stmarys.org", "dr.mehta@stmarys.org", "admin@stmarys.org"} <= emails
+    assert {"anitha.joseph@noyyalortho.in", "dr.arun@noyyalortho.in", "admin@noyyalortho.in"} <= emails
     assert all("hashed_password" not in c and "password" not in c for c in roster)
 
 
 async def test_only_a_superadmin_manages_accounts(client, db, nurse_headers):
     assert (await client.post("/api/v1/clinicians", json=NEW, headers=nurse_headers)).status_code == 403
-    mehta = await admin_id_for(db, "dr.mehta@stmarys.org")
-    res = await client.patch(f"/api/v1/clinicians/{mehta}", json={"is_active": False}, headers=nurse_headers)
+    surgeon = await admin_id_for(db, "dr.arun@noyyalortho.in")
+    res = await client.patch(f"/api/v1/clinicians/{surgeon}", json={"is_active": False}, headers=nurse_headers)
     assert res.status_code == 403
 
 
@@ -65,10 +65,10 @@ async def test_nobody_can_demote_or_deactivate_themselves(client, superadmin):
 
 async def test_another_hospitals_clinician_is_not_found(client, db, superadmin):
     _, headers = superadmin
-    nurse = await admin_id_for(db, "nurse.sarah@stmarys.org")
+    nurse = await admin_id_for(db, "anitha.joseph@noyyalortho.in")
     res = await client.patch(f"/api/v1/clinicians/{nurse}", json={"is_active": False}, headers=headers)
     assert res.status_code == 404
-    await login_headers(client, "nurse.sarah@stmarys.org", "password123")
+    await login_headers(client, "anitha.joseph@noyyalortho.in", "password123")
 
 
 async def test_changing_your_own_password(client, superadmin):

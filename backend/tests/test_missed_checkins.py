@@ -104,3 +104,44 @@ async def test_the_sweep_judges_every_owed_day_once(db):
     again = await run_missed_checkin_sweep(isolated_session_factory)
     assert again["evaluated"] == 0
     assert len(await _evaluations(db, hospital.episode_id)) == 1
+
+
+async def test_a_patient_who_keeps_missing_has_one_missed_alert(db):
+    """The demo seed's missed alert and the sweep's share a reason key, so they are one alert."""
+    from app.services.rules_engine import evaluate_missed_check_in
+    from tests.support import episode_for_mrn
+
+    suresh = await episode_for_mrn(db, "FX-06")
+    ruleset_id = (await db.execute(
+        text("SELECT ruleset_id FROM txn.patient_episode WHERE episode_id = :e"), {"e": suresh}
+    )).scalar_one()
+
+    # What the sweep does for Suresh alone, so other hospitals' queues are untouched.
+    _, raised = await evaluate_missed_check_in(db, episode_id=suresh, ruleset_id=ruleset_id, day=20)
+    await db.commit()
+
+    assert raised is None
+    open_missed = (await db.execute(text("""
+        SELECT count(*) FROM txn.alert
+        WHERE episode_id = :e AND tier = 'missed' AND status IN ('open', 'acknowledged')
+    """), {"e": suresh})).scalar_one()
+    assert open_missed == 1
+
+
+async def test_a_patient_back_before_the_sweep_gets_no_open_missed_alert(db):
+    """Missed yesterday, checked in this morning, swept at ten: the day is recorded, the alert closed."""
+    hospital = await _episode(db)
+    await add_check_in(db, hospital.episode_id, 10, {"temp_c": 36.8})
+
+    await run_missed_checkin_sweep(isolated_session_factory)
+
+    # add_check_in stores day 10 without scoring it, so the only evaluation is the missed day.
+    assert [(e["day_after_discharge"], e["tier"]) for e in await _evaluations(db, hospital.episode_id)] == [
+        (9, "missed"),
+    ]
+    alerts = (await db.execute(text("""
+        SELECT status, outcome_note FROM txn.alert WHERE episode_id = :e AND tier = 'missed'
+    """), {"e": hospital.episode_id})).mappings().all()
+    assert [(a["status"], a["outcome_note"]) for a in alerts] == [
+        ("expired", "Closed automatically: the patient checked in on day 10."),
+    ]

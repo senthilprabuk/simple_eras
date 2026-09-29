@@ -52,7 +52,7 @@ async def _handshake(client, token):
 
 
 async def test_handshake_accepts_a_connected_hospitals_verify_token(client):
-    res = await _handshake(client, "eras_stmarys_verify_2026")
+    res = await _handshake(client, "eras_noyyal_verify_2026")
     assert res.status_code == 200
     assert res.text == "1158201244"
 

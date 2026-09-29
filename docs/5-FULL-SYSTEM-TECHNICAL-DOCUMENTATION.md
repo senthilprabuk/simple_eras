@@ -165,7 +165,7 @@ frontend/src/app/
 ### Screen 1: Risk Queue Dashboard (`/`)
 * **Purpose**: Primary clinical command center for monitoring recovering knee arthroplasty patients.
 * **Components**:
-  * `TopHeader`: Displays clinic branding ("St. Mary's Orthopedic Center — Wing B"), connection status ("LIVE NEON POSTGRESQL"), active clinician profile, and emergency "Call Protocol" modal.
+  * `TopHeader`: Displays clinic branding (the hospital's name, e.g. "Noyyal Orthopaedic Centre"), connection status ("LIVE NEON POSTGRESQL"), active clinician profile, and emergency "Call Protocol" modal.
   * `KpiMetrics`: 4 real-time telemetry cards: **Active Patients Census**, **Open Alerts**, **Ack <15m Response Compliance (7d)**, and **Missed Check-ins Today**.
   * `QueueControls`: Severity filter pills (`Emergency`, `Critical`, `Review`, `Missed`, `All`) and Pod selectors (`All PODs`, `East Wing`, `West Wing`).
   * `RiskQueueTable`: Deterministically sorted table presenting patient name, MRN, post-op day, procedure, severity badge, clinical flag reasons, SLA countdown timer, and inline `Acknowledge` action with honest error handling.

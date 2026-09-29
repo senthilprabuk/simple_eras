@@ -24,14 +24,14 @@ async def test_filters_by_status_tier_and_patient(client, db, nurse_headers):
     assert {i["tier"] for i in missed["items"]} == {"missed"}
 
     dropout = await _alerts(client, nurse_headers, f"&episode_id={await episode_for_mrn(db, 'FX-06')}")
-    assert [(i["patient_name"], i["tier"]) for i in dropout["items"]] == [("Suresh Babu [Drop Out]", "missed")]
+    assert [(i["patient_name"], i["tier"]) for i in dropout["items"]] == [("Suresh Babu", "missed")]
 
 
 async def test_history_records_how_quickly_an_alert_was_acknowledged(client, db, nurse_headers):
     fever = await _alerts(client, nurse_headers, f"&episode_id={await episode_for_mrn(db, 'FX-08')}")
     item = fever["items"][0]
-    assert item["acknowledged_by_name"] == "Dr. K. Mehta"
-    assert 16 * 60 <= item["ack_secs"] <= 18 * 60
+    assert item["acknowledged_by_name"] == "Dr. Arun Prakash"
+    assert 7 * 60 <= item["ack_secs"] <= 9 * 60
     assert item["ack_window_secs"] == 900
 
 
@@ -44,7 +44,7 @@ async def test_resolved_alerts_show_outcome_and_resolver(client, db, nurse_heade
     item = next(i for i in resolved["items"] if i["alert_id"] == str(alert_id))
     assert item["outcome"] == "same_day_review"
     assert item["outcome_note"] == "Seen in clinic"
-    assert item["resolved_by_name"] == "Nurse Sarah Jenkins"
+    assert item["resolved_by_name"] == "Anitha Joseph"
 
 
 async def test_history_is_limited_to_the_callers_hospital(client, h2_headers):

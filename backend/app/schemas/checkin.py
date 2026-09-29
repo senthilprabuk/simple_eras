@@ -57,6 +57,8 @@ class CheckInForm(BaseModel):
     ruleset_id: int
     effective_day: int
     simulated: bool = Field(False, description="True when effective_day was overridden for demonstration")
+    language: str = Field("en", description="Language of the questions: en, ta or hi")
+    patient_language: str = Field("en", description="The language the patient enrolled in")
     already_submitted_today: bool
     sections: List[FormSection]
 

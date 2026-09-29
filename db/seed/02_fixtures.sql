@@ -112,23 +112,24 @@ create temporary table fx_expect (
 
 -- ---------------------------------------------------------------------
 -- 3. The twelve fixtures
---    Names are invented; the bracketed part names the scenario each tests.
+--    Names are invented. The scenario each tests is its fixture key and purpose,
+--    never part of the name a nurse or a buyer sees.
 -- ---------------------------------------------------------------------
 insert into fx_patient (fixture, display_name, last_day, base_hr, purpose) values
- ('f01_smooth',        'Lakshmi Narayanan [Smooth Recovery]', 21, 72, 'Control. Must never escalate.'),
- ('f02_slow_burn',     'Rajesh Kumar [Slow Burn]',            21, 72, 'Infection from day 7. Arms fever_returned.'),
- ('f03_dvt',           'Meena Sundaram [Sudden Clot]',        21, 74, 'Binary override, day 4.'),
- ('f04_pe',            'Karthik Subramanian [Breathless]',    21, 76, 'Emergency override, day 6.'),
- ('f05_erratic',       'Priya Venkatesh [Erratic Reporter]',  21, 70, 'Gaps and noise, recovering.'),
- ('f06_dropout',       'Suresh Babu [Drop Out]',               5, 73, 'Stops day 5. Absence sweep.'),
- ('f07_combination',   'Kavitha Ramesh [Combination Creep]',  21, 70, 'No band 3. Weighted total escalates.'),
- ('f08_early_fever',   'Anand Krishnan [Early Low Fever]',    21, 80, 'Expected day 0-3 picture.'),
- ('f09_collect_score', 'Deepa Iyer [Collect Not Score]',      21, 72, 'Drainage from day 2: collected, scored from 5.'),
- ('f11_one_day_spike', 'Harish Patel [One Day Spike]',        21, 72, 'Hysteresis must hold the tier.'),
- ('f12_mobility_drop', 'Sunita Sharma [Mobility Drop]',       21, 72, 'Steps halve from personal best, day 12.'),
- ('f13_out_of_window', 'Ganesh Moorthy [Out Of Window]',      21, 72, 'Nurse enters knee_bend on day 5, outside collect.'),
- ('f14_slow_creep',    'Bhuvana Rajan [Smouldering Knee]',    21, 72, 'Creep under every band edge. Only slow_burn escalates.'),
- ('f15_partial',       'Nandini Raghavan [Partial Reporter]', 21, 72, 'Answers two questions a day. Low confidence.');
+ ('f01_smooth',        'Lakshmi Narayanan', 21, 72, 'Control. Must never escalate.'),
+ ('f02_slow_burn',     'Rajesh Kumar',            21, 72, 'Infection from day 7. Arms fever_returned.'),
+ ('f03_dvt',           'Meena Sundaram',        21, 74, 'Binary override, day 4.'),
+ ('f04_pe',            'Karthik Subramanian',    21, 76, 'Emergency override, day 6.'),
+ ('f05_erratic',       'Priya Venkatesh',  21, 70, 'Gaps and noise, recovering.'),
+ ('f06_dropout',       'Suresh Babu',               5, 73, 'Stops day 5. Absence sweep.'),
+ ('f07_combination',   'Kavitha Ramesh',  21, 70, 'No band 3. Weighted total escalates.'),
+ ('f08_early_fever',   'Anand Krishnan',    21, 80, 'Expected day 0-3 picture.'),
+ ('f09_collect_score', 'Deepa Iyer',      21, 72, 'Drainage from day 2: collected, scored from 5.'),
+ ('f11_one_day_spike', 'Harish Patel',        21, 72, 'Hysteresis must hold the tier.'),
+ ('f12_mobility_drop', 'Sunita Sharma',       21, 72, 'Steps halve from personal best, day 12.'),
+ ('f13_out_of_window', 'Ganesh Moorthy',      21, 72, 'Nurse enters knee_bend on day 5, outside collect.'),
+ ('f14_slow_creep',    'Bhuvana Rajan',    21, 72, 'Creep under every band edge. Only slow_burn escalates.'),
+ ('f15_partial',       'Nandini Raghavan', 21, 72, 'Answers two questions a day. Low confidence.');
 
 -- ---- who they are, where they live, and the first person to call
 create temporary table fx_person (
@@ -396,7 +397,8 @@ select md5(f.fixture)::uuid, h.hospital_id,
        'FX-' || upper(substr(f.fixture, 2, 2)),
        f.display_name,
        '+9198' || lpad((abs(hashtext(f.fixture)) % 100000000)::text, 8, '0'),
-       'en',
+       -- Two patients check in in Tamil and Hindi, so a demo shows both.
+       case f.fixture when 'f01_smooth' then 'ta' when 'f12_mobility_drop' then 'hi' else 'en' end,
        x.gender, x.street, 'Coimbatore', 'Coimbatore', 'Tamil Nadu', x.postal_code
 from fx_patient f
 join fx_person x on x.fixture = f.fixture

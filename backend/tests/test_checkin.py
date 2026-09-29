@@ -1,3 +1,4 @@
+from datetime import timedelta
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -97,3 +98,87 @@ async def test_each_answer_carries_exactly_one_value(client, db):
 
 async def test_unknown_episode_is_not_found(client):
     assert (await client.get(f"/api/v1/checkin/form?episode_id={uuid4()}")).status_code == 404
+
+
+async def test_the_form_speaks_the_patients_language(client, db):
+    lakshmi = await episode_for_mrn(db, "FX-01")  # enrolled in Tamil
+
+    form = (await client.get(f"/api/v1/checkin/form?episode_id={lakshmi}")).json()
+    assert (form["language"], form["patient_language"]) == ("ta", "ta")
+    questions = {p["code"]: p for s in form["sections"] for p in s["parameters"]}
+    assert questions["breathless"]["question_text"].startswith("உங்களுக்குப்")
+    assert questions["breathless"]["name"] == "மூச்சுத் திணறல் அல்லது நெஞ்சு வலி"
+
+    english = (await client.get(f"/api/v1/checkin/form?episode_id={lakshmi}&lang=en")).json()
+    assert english["language"] == "en"
+    assert {p["code"]: p for s in english["sections"] for p in s["parameters"]}["breathless"]["question_text"] == (
+        "Are you newly short of breath, or having new chest pain?"
+    )
+
+    hindi = (await client.get(f"/api/v1/checkin/form?episode_id={lakshmi}&lang=hi&day=20")).json()
+    options = {p["code"]: p for s in hindi["sections"] for p in s["parameters"]}["walk_aid"]["options"]
+    assert [o["label"] for o in options][-1] == "कोई सहारा नहीं"
+
+
+async def test_a_question_reworded_in_a_new_ruleset_falls_back_to_english(client, db):
+    lakshmi = await episode_for_mrn(db, "FX-01")
+    await db.execute(text("""
+        UPDATE meta.procedure_parameter pp SET question_text_i18n = '{}'::jsonb
+        FROM meta.parameter p
+        WHERE p.parameter_id = pp.parameter_id AND p.parameter_code = 'steps'
+    """))
+    await db.commit()
+    try:
+        form = (await client.get(f"/api/v1/checkin/form?episode_id={lakshmi}")).json()
+        steps = {p["code"]: p for s in form["sections"] for p in s["parameters"]}["steps"]
+        assert steps["question_text"] == "How many steps today?"
+    finally:
+        await db.execute(text("""
+            UPDATE meta.procedure_parameter pp
+            SET question_text_i18n = '{"ta": "இன்று எத்தனை அடிகள் நடந்தீர்கள்?", "hi": "आज आप कितने कदम चले?"}'::jsonb
+            FROM meta.parameter p
+            WHERE p.parameter_id = pp.parameter_id AND p.parameter_code = 'steps'
+        """))
+        await db.commit()
+
+
+async def _alert_states(db, episode_id):
+    return {r["tier"]: r for r in (await db.execute(text("""
+        SELECT tier, status, resolved_at, outcome, outcome_note FROM txn.alert WHERE episode_id = :e
+    """), {"e": episode_id})).mappings().all()}
+
+
+async def test_checking_in_closes_the_missed_alert_and_nothing_else(client, db):
+    from tests.support import create_alert, create_hospital
+
+    h = await create_hospital(db, "BACK-AGAIN")
+    await create_alert(db, h.episode_id, tier="missed", raised_ago=timedelta(hours=20))
+    await create_alert(db, h.episode_id, tier="critical")
+
+    res = await client.post("/api/v1/checkin", json={
+        "episode_id": str(h.episode_id), "day_after_discharge": 10,
+        "idempotency_key": f"back-{uuid4().hex}", "values": [],
+    })
+    assert res.status_code == 201
+
+    alerts = await _alert_states(db, h.episode_id)
+    assert alerts["missed"]["status"] == "expired"
+    assert alerts["missed"]["resolved_at"] is not None
+    assert alerts["missed"]["outcome"] is None
+    assert alerts["missed"]["outcome_note"] == "Closed automatically: the patient checked in on day 10."
+    # A clinical finding still needs a nurse to record an outcome.
+    assert alerts["critical"]["status"] == "open"
+
+
+async def test_a_simulated_day_leaves_a_real_missed_alert_open(client, db):
+    from tests.support import create_alert, create_hospital
+
+    h = await create_hospital(db, "SIM-DAY")
+    await create_alert(db, h.episode_id, tier="missed")
+
+    res = await client.post("/api/v1/checkin", json={
+        "episode_id": str(h.episode_id), "day_after_discharge": 3, "simulated": True,
+        "idempotency_key": f"sim-{uuid4().hex}", "values": [],
+    })
+    assert res.status_code == 201
+    assert (await _alert_states(db, h.episode_id))["missed"]["status"] == "open"

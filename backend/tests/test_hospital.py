@@ -5,7 +5,7 @@ from tests.support import create_hospital
 async def test_profile_shows_settings_procedures_and_activity(client, nurse_headers):
     profile = (await client.get("/api/v1/hospital", headers=nurse_headers)).json()
     assert profile["hospital_code"] == "CBE-01"
-    assert profile["hospital_name"] == "St. Mary's Orthopedic Center"
+    assert profile["hospital_name"] == "Noyyal Orthopaedic Centre"
     assert profile["timezone"] == "Asia/Kolkata"
     assert profile["ack_window_secs"] == 900
     assert [p["procedure_code"] for p in profile["procedures"]] == ["TKR"]
@@ -44,7 +44,7 @@ async def test_a_superadmin_cannot_touch_another_hospital(client, db, nurse_head
     await client.patch("/api/v1/hospital", json={"hospital_name": "Renamed"}, headers=headers)
 
     fixture_hospital = (await client.get("/api/v1/hospital", headers=nurse_headers)).json()
-    assert fixture_hospital["hospital_name"] == "St. Mary's Orthopedic Center"
+    assert fixture_hospital["hospital_name"] == "Noyyal Orthopaedic Centre"
     assert fixture_hospital["ack_window_secs"] == 900
 
 

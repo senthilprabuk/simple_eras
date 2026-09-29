@@ -62,6 +62,10 @@ export interface CheckInForm {
   ruleset_id: number;
   effective_day: number;
   simulated: boolean;
+  /** Language of the questions, names and options: en, ta or hi. */
+  language: string;
+  /** The language the patient enrolled in. */
+  patient_language: string;
   already_submitted_today: boolean;
   sections: FormSection[];
 }
@@ -106,14 +110,16 @@ export function fetchEpisodes(): Promise<EpisodeOption[]> {
   return getJson<EpisodeOption[]>("/api/v1/checkin/episodes");
 }
 
-export function fetchCheckInForm(episodeId: string, day?: number): Promise<CheckInForm> {
-  const query = day === undefined ? "" : `&day=${day}`;
+export function fetchCheckInForm(episodeId: string, day?: number, lang?: string): Promise<CheckInForm> {
+  const query = `${day === undefined ? "" : `&day=${day}`}${lang ? `&lang=${lang}` : ""}`;
   return getJson<CheckInForm>(`/api/v1/checkin/form?episode_id=${episodeId}${query}`);
 }
 
 /** The token goes in a header, not the URL, so no server or proxy access log records it. */
-export function fetchCheckInFormByToken(token: string): Promise<CheckInForm> {
-  return getJson<CheckInForm>("/api/v1/checkin/form", { headers: { "X-Checkin-Token": token } });
+export function fetchCheckInFormByToken(token: string, lang?: string): Promise<CheckInForm> {
+  return getJson<CheckInForm>(`/api/v1/checkin/form${lang ? `?lang=${lang}` : ""}`, {
+    headers: { "X-Checkin-Token": token },
+  });
 }
 
 export async function submitCheckIn(input: {
@@ -209,14 +215,36 @@ export function isAnswered(value: AnswerValue): boolean {
   return value !== null && value !== undefined;
 }
 
-export function formatAnswer(param: FormParameter, value: AnswerValue): string {
-  if (!isAnswered(value)) return "Not answered";
-  if (param.type === "boolean") return value ? "Yes" : "No";
+export interface AnswerWords {
+  notAnswered: string;
+  yes: string;
+  no: string;
+}
+
+const ENGLISH_ANSWER_WORDS: AnswerWords = { notAnswered: "Not answered", yes: "Yes", no: "No" };
+
+export function formatAnswer(param: FormParameter, value: AnswerValue, words: AnswerWords = ENGLISH_ANSWER_WORDS): string {
+  if (!isAnswered(value)) return words.notAnswered;
+  if (param.type === "boolean") return value ? words.yes : words.no;
   if (param.type === "ordinal") {
     return param.options.find((o) => o.code === value)?.label ?? String(value);
   }
   const text = Number(value).toFixed(param.decimals);
   return param.unit ? `${text} ${param.unit}` : text;
+}
+
+/**
+ * A blank answer is unknown, never "no". A yes/no symptom question can always be
+ * answered, so it must be, as must anything the ruleset marks mandatory; a reading
+ * the patient cannot take may be skipped, but only once they have seen what is missing.
+ */
+export function isRequired(param: FormParameter): boolean {
+  return param.type === "boolean" || param.is_mandatory;
+}
+
+export function unansweredIn(section: FormSection, answers: Answers): { required: FormParameter[]; optional: FormParameter[] } {
+  const blank = section.parameters.filter((p) => !isAnswered(answers[p.code]));
+  return { required: blank.filter(isRequired), optional: blank.filter((p) => !isRequired(p)) };
 }
 
 /** Red flags that need a phone call now rather than routine triage. */

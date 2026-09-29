@@ -245,7 +245,8 @@ insert into meta.schema_migration (version, name) values
     ('011', '011_patient_messages'),
     ('012', '012_hospital_whatsapp'),
     ('013', '013_whatsapp_hardening'),
-    ('014', '014_hospital_emergency_phone')
+    ('014', '014_hospital_emergency_phone'),
+    ('015', '015_checkin_languages_and_unanswered')
 on conflict (version) do nothing;
 
 commit;

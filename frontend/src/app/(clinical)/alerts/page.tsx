@@ -279,6 +279,15 @@ export default function AlertsPage() {
                             </div>
                             {a.outcome_note && <p className="font-body-sm text-on-surface mt-1">&ldquo;{a.outcome_note}&rdquo;</p>}
                           </>
+                        ) : a.status === "expired" ? (
+                          // A missed check-in closes itself when the patient checks in again.
+                          <>
+                            <div className="font-body-md text-on-surface">Closed automatically</div>
+                            {a.resolved_at && (
+                              <div className="font-body-sm text-on-surface-variant">{formatDateTime(a.resolved_at)}</div>
+                            )}
+                            {a.outcome_note && <p className="font-body-sm text-on-surface mt-1">{a.outcome_note}</p>}
+                          </>
                         ) : (
                           <span className="font-body-sm text-outline italic">Not resolved</span>
                         )}

@@ -33,6 +33,8 @@ export interface QueueRow {
   acknowledged_at: string | null;
   acknowledged_by_name: string | null;
   ack_window_secs: number;
+  /** Questions the check-in behind this alert left blank: unknown, never "no". */
+  unanswered?: string[];
 }
 
 export interface QueueResponse {

@@ -29,7 +29,7 @@ async def test_list_shows_active_patients_most_urgent_first(client, nurse_header
 async def test_list_reports_adherence_from_check_in_days(client, nurse_headers):
     items = (await client.get("/api/v1/patients?search=FX-06", headers=nurse_headers)).json()["items"]
     dropout = items[0]
-    assert dropout["patient_name"] == "Suresh Babu [Drop Out]"
+    assert dropout["patient_name"] == "Suresh Babu"
     assert dropout["post_op_day"] == 21
     assert dropout["check_in_days"] == 6          # days 0-5, then it stops
     assert dropout["expected_check_in_days"] == 22
@@ -38,7 +38,7 @@ async def test_list_reports_adherence_from_check_in_days(client, nurse_headers):
 
 
 async def test_search_matches_name_or_mrn_and_treats_wildcards_literally(client, nurse_headers):
-    by_name = (await client.get("/api/v1/patients?search=sudden%20clot", headers=nurse_headers)).json()
+    by_name = (await client.get("/api/v1/patients?search=meena%20sund", headers=nurse_headers)).json()
     assert [i["mrn"] for i in by_name["items"]] == ["FX-03"]
 
     by_mrn = (await client.get("/api/v1/patients?search=FX-0", headers=nurse_headers)).json()

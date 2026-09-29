@@ -9,16 +9,35 @@ import {
   anchorFor,
   stepFor,
 } from "@/lib/checkinApi";
+import { CheckInText } from "@/lib/checkinText";
+
+/** Shown under a question the patient must answer before moving on. */
+function PleaseAnswer({ text }: { text: CheckInText }) {
+  return (
+    <p className="font-body-sm text-error mt-space-sm flex items-center gap-1" role="alert">
+      <span className="material-symbols-outlined text-[16px]">error</span>
+      {text.pleaseAnswer}
+    </p>
+  );
+}
 
 export function QuestionCard({
   param,
+  text,
+  flagged = false,
   children,
 }: {
   param: FormParameter;
+  text: CheckInText;
+  flagged?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <section className="bg-surface-container-lowest rounded-2xl border border-outline-variant/40 p-space-md">
+    <section
+      className={`bg-surface-container-lowest rounded-2xl border p-space-md ${
+        flagged ? "border-error border-2" : "border-outline-variant/40"
+      }`}
+    >
       <div className="flex items-start gap-space-sm mb-space-md">
         <span className="material-symbols-outlined text-[22px] text-primary mt-0.5 shrink-0">
           {iconFor(param)}
@@ -26,6 +45,7 @@ export function QuestionCard({
         <h2 className="font-title-sm text-on-surface">{param.question_text}</h2>
       </div>
       {children}
+      {flagged && <PleaseAnswer text={text} />}
     </section>
   );
 }
@@ -34,10 +54,12 @@ export function NumberStepper({
   param,
   value,
   onChange,
+  text,
 }: {
   param: FormParameter;
   value: AnswerValue;
   onChange: (v: AnswerValue) => void;
+  text: CheckInText;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -66,7 +88,7 @@ export function NumberStepper({
 
   return (
     <div className="flex items-center justify-between gap-space-sm">
-      <StepButton icon="remove" label={`Decrease ${param.name}`} onClick={() => nudge(-1)} />
+      <StepButton icon="remove" label={text.decrease(param.name)} onClick={() => nudge(-1)} />
 
       <div className="flex-1 text-center">
         {editing ? (
@@ -87,7 +109,7 @@ export function NumberStepper({
               setDraft(current === null ? "" : String(current));
               setEditing(true);
             }}
-            aria-label={`Type a value for ${param.name}`}
+            aria-label={text.typeValue(param.name)}
             className="w-full py-1 rounded-xl hover:bg-surface-container-low transition-colors cursor-pointer"
           >
             <span
@@ -101,13 +123,13 @@ export function NumberStepper({
               <span className="font-body-md text-on-surface-variant ml-1">{param.unit}</span>
             )}
             <span className="block font-body-sm text-outline">
-              {current === null ? "Tap to enter" : "Tap to edit"}
+              {current === null ? text.tapToEnter : text.tapToEdit}
             </span>
           </button>
         )}
       </div>
 
-      <StepButton icon="add" label={`Increase ${param.name}`} onClick={() => nudge(1)} />
+      <StepButton icon="add" label={text.increase(param.name)} onClick={() => nudge(1)} />
     </div>
   );
 }
@@ -133,13 +155,14 @@ function StepButton({
   );
 }
 
-function painDescriptor(score: number): string {
-  if (score === 0) return "No pain";
-  if (score <= 2) return "Mild";
-  if (score <= 4) return "Uncomfortable";
-  if (score <= 6) return "Moderate";
-  if (score <= 8) return "Severe";
-  return "Worst possible";
+function painDescriptor(score: number, text: CheckInText): string {
+  const [none, mild, uncomfortable, moderate, severe, worst] = text.painLevels;
+  if (score === 0) return none;
+  if (score <= 2) return mild;
+  if (score <= 4) return uncomfortable;
+  if (score <= 6) return moderate;
+  if (score <= 8) return severe;
+  return worst;
 }
 
 function painTone(score: number) {
@@ -152,10 +175,12 @@ export function PainScale({
   param,
   value,
   onChange,
+  text,
 }: {
   param: FormParameter;
   value: AnswerValue;
   onChange: (v: AnswerValue) => void;
+  text: CheckInText;
 }) {
   const selected = typeof value === "number" ? value : null;
   const min = param.value_min ?? 0;
@@ -172,7 +197,7 @@ export function PainScale({
             <button
               key={score}
               type="button"
-              aria-label={`${score} out of ${max}`}
+              aria-label={text.outOf(score, max)}
               aria-pressed={active}
               onClick={() => onChange(score)}
               className={`h-12 rounded-xl font-title-sm border transition-colors cursor-pointer ${
@@ -192,8 +217,8 @@ export function PainScale({
         }`}
       >
         {selected === null
-          ? `${min} is no pain, ${max} is the worst you can imagine`
-          : `${selected} / ${max} · ${painDescriptor(selected)}`}
+          ? text.painHint(min, max)
+          : `${selected} / ${max} · ${painDescriptor(selected, text)}`}
       </p>
     </div>
   );
@@ -243,10 +268,14 @@ export function YesNoQuestion({
   param,
   value,
   onChange,
+  text,
+  flagged = false,
 }: {
   param: FormParameter;
   value: AnswerValue;
   onChange: (v: AnswerValue) => void;
+  text: CheckInText;
+  flagged?: boolean;
 }) {
   const answered = isAnswered(value);
   const isYes = value === true;
@@ -256,7 +285,9 @@ export function YesNoQuestion({
       className={`rounded-2xl border p-space-md transition-colors ${
         isYes
           ? "bg-error-container/40 border-error/40"
-          : "bg-surface-container-lowest border-outline-variant/40"
+          : flagged
+            ? "bg-surface-container-lowest border-error border-2"
+            : "bg-surface-container-lowest border-outline-variant/40"
       }`}
     >
       <div className="flex items-start gap-space-sm mb-space-sm">
@@ -281,7 +312,7 @@ export function YesNoQuestion({
               : "bg-surface-container-low border-outline-variant/40 text-on-surface-variant hover:border-outline-variant"
           }`}
         >
-          Yes
+          {text.yes}
         </button>
         <button
           type="button"
@@ -293,9 +324,10 @@ export function YesNoQuestion({
               : "bg-surface-container-low border-outline-variant/40 text-on-surface-variant hover:border-outline-variant"
           }`}
         >
-          No
+          {text.no}
         </button>
       </div>
+      {flagged && !answered && <PleaseAnswer text={text} />}
     </section>
   );
 }

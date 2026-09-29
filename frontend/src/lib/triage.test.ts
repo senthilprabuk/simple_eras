@@ -97,8 +97,8 @@ describe("queue helpers", () => {
   });
 
   it("makes initials without honorifics", () => {
-    expect(initials("Nurse Sarah Jenkins")).toBe("SJ");
-    expect(initials("Dr. K. Mehta")).toBe("KM");
+    expect(initials("Anitha Joseph")).toBe("AJ");
+    expect(initials("Dr. Arun Prakash")).toBe("AP");
     expect(initials("")).toBe("?");
   });
 });

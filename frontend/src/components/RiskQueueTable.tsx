@@ -116,6 +116,12 @@ export default function RiskQueueTable({
                         </span>
                       ))}
                     </div>
+                    {/* A missed check-in answered nothing by definition; listing every question adds nothing. */}
+                    {row.tier !== "missed" && row.unanswered && row.unanswered.length > 0 && (
+                      <div className="mt-1.5 font-body-sm text-on-surface-variant">
+                        <span className="font-semibold">Not answered:</span> {row.unanswered.join(", ")}
+                      </div>
+                    )}
                   </td>
 
                   <td className="py-3.5 px-space-md">

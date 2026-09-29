@@ -18,30 +18,30 @@ async def test_login_success(client: httpx.AsyncClient):
     assert res.status_code == 200
     data = res.json()
     assert data["token_type"] == "bearer"
-    assert data["full_name"] == "Nurse Sarah Jenkins"
+    assert data["full_name"] == "Anitha Joseph"
     assert data["role"] == "admin"
     assert data["hospital_id"] == 1
-    assert data["hospital_name"] == "St. Mary's Orthopedic Center"
+    assert data["hospital_name"] == "Noyyal Orthopaedic Centre"
     assert data["expires_in"] == settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
 
 
 async def test_login_case_insensitive_email(client: httpx.AsyncClient):
-    res = await client.post("/api/v1/auth/login", json={"email": "  NURSE.SARAH@STMARYS.ORG  ", "password": NURSE[1]})
+    res = await client.post("/api/v1/auth/login", json={"email": "  ANITHA.JOSEPH@NOYYALORTHO.IN  ", "password": NURSE[1]})
     assert res.status_code == 200
-    assert res.json()["full_name"] == "Nurse Sarah Jenkins"
+    assert res.json()["full_name"] == "Anitha Joseph"
 
 
 async def test_wrong_password_unknown_email_and_inactive_account_are_indistinguishable(client, db):
     await db.execute(text("""
         INSERT INTO meta.admin_user (hospital_id, email, hashed_password, full_name, is_active)
-        VALUES (1, 'retired.nurse@stmarys.org', :pwd, 'Retired Nurse', false)
+        VALUES (1, 'retired.nurse@noyyalortho.in', :pwd, 'Retired Nurse', false)
     """), {"pwd": get_password_hash(PASSWORD)})
     await db.commit()
 
     attempts = [
         {"email": NURSE[0], "password": "wrong-password"},
-        {"email": "nobody@stmarys.org", "password": "anything"},
-        {"email": "retired.nurse@stmarys.org", "password": PASSWORD},  # right password, inactive
+        {"email": "nobody@noyyalortho.in", "password": "anything"},
+        {"email": "retired.nurse@noyyalortho.in", "password": PASSWORD},  # right password, inactive
     ]
     for body in attempts:
         res = await client.post("/api/v1/auth/login", json=body)
@@ -59,7 +59,7 @@ async def test_repeated_failures_lock_the_account_for_that_client(client: httpx.
     assert res.status_code == 429
 
     # A different account from the same client is unaffected.
-    res = await client.post("/api/v1/auth/login", json={"email": "dr.mehta@stmarys.org", "password": "password123"})
+    res = await client.post("/api/v1/auth/login", json={"email": "dr.arun@noyyalortho.in", "password": "password123"})
     assert res.status_code == 200
 
 

@@ -21,8 +21,8 @@ describe("templateProblems", () => {
 
 describe("renderTemplate", () => {
   it("fills known placeholders and leaves unknown ones visible", () => {
-    expect(renderTemplate("Hi {patient_first_name} from {hospital_name} {oops}", { patient_first_name: "Lakshmi", hospital_name: "St. Mary's" }))
-      .toBe("Hi Lakshmi from St. Mary's {oops}");
+    expect(renderTemplate("Hi {patient_first_name} from {hospital_name} {oops}", { patient_first_name: "Lakshmi", hospital_name: "Noyyal Ortho" }))
+      .toBe("Hi Lakshmi from Noyyal Ortho {oops}");
   });
 
   it("lists placeholders in order", () => {

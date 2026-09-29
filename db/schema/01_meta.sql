@@ -172,6 +172,7 @@ create table meta.parameter (
     loinc_code           text,                          -- FHIR Observation.code, e.g. '8310-5'
     is_active            boolean     not null default true,
     created_at           timestamptz not null default now(),
+    parameter_name_i18n  jsonb       not null default '{}'::jsonb,  -- {"ta": ..., "hi": ...}
 
     constraint parameter_type_known
         check (parameter_type in ('numeric','boolean','ordinal')),
@@ -195,6 +196,7 @@ create table meta.parameter_option (
     option_code   text     not null,          -- 'chair', 'car', 'bike'
     option_label  text     not null,          -- 'Sit in a dining chair'
     ordinal_rank  smallint not null,          -- 1, 2, 3 — higher is better progress
+    option_label_i18n jsonb not null default '{}'::jsonb,  -- {"ta": ..., "hi": ...}
 
     primary key (parameter_id, option_code),
     unique (parameter_id, ordinal_rank)
@@ -294,6 +296,7 @@ create table meta.procedure_parameter (
     scoring_config   jsonb    not null,        -- direction / bands / bands_by_day / binary_score / detector
     question_text    text,                     -- patient-facing wording
     nurse_script     text,                     -- what to ask when this rule fires
+    question_text_i18n jsonb not null default '{}'::jsonb,  -- {"ta": ..., "hi": ...}; null key = English
 
     primary key (ruleset_id, parameter_id),
     unique (ruleset_id, display_order),

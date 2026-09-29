@@ -53,6 +53,10 @@ async def get_report(
             JOIN meta.hospital h       ON h.hospital_id = e.hospital_id
             WHERE e.hospital_id = :h_id
               AND a.raised_at >= now() - make_interval(days => :days)
+              -- An alert that closed itself inside its window before anyone acknowledged
+              -- it (a missed check-in the patient answered) never fell due.
+              AND NOT (a.status = 'expired' AND a.acknowledged_at IS NULL
+                       AND a.resolved_at <= a.raised_at + make_interval(secs => h.ack_window_secs))
         )
         SELECT w.week_start,
                count(a.tier) FILTER (WHERE a.tier = 'emergency') AS emergency,

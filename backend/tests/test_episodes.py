@@ -19,10 +19,10 @@ async def test_summary_pairs_discharge_baseline_with_latest_check_in(client, db,
     assert res.status_code == 200
     data = res.json()
 
-    assert data["patient_name"] == "Lakshmi Narayanan [Smooth Recovery]"
+    assert data["patient_name"] == "Lakshmi Narayanan"
     assert data["mrn"] == "FX-01"
     assert data["phone_e164"].startswith("+")
-    assert data["hospital_name"] == "St. Mary's Orthopedic Center"
+    assert data["hospital_name"] == "Noyyal Orthopaedic Centre"
     assert data["ruleset_version"] == "1.0.0"
     assert data["post_op_day"] == 21
     assert data["latest_check_in"]["day_after_discharge"] == 21

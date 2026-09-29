@@ -64,8 +64,8 @@ from app.core.login_throttle import login_throttle  # noqa: E402
 from seed.seed_demo import seed_demo  # noqa: E402
 from tests.support import create_hospital  # noqa: E402
 
-NURSE = ("nurse.sarah@stmarys.org", "password123")
-SURGEON = ("dr.mehta@stmarys.org", "password123")
+NURSE = ("anitha.joseph@noyyalortho.in", "password123")
+SURGEON = ("dr.arun@noyyalortho.in", "password123")
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)

@@ -131,3 +131,41 @@ async def test_kpis_custom_window_days(client: httpx.AsyncClient, nurse_headers:
 async def test_kpis_invalid_window_days(client: httpx.AsyncClient, nurse_headers: Dict[str, str]):
     res = await client.get("/api/v1/dashboard/kpis?window_days=999", headers=nurse_headers)
     assert res.status_code == 422
+
+
+async def test_the_queue_names_the_questions_a_check_in_left_blank(client, db):
+    h = await create_hospital(db, "Q-BLANK")
+    headers = await login_headers(client, h.email, h.password)
+    form = (await client.get(f"/api/v1/checkin/form?episode_id={h.episode_id}")).json()
+    breathless = next(p for s in form["sections"] for p in s["parameters"] if p["code"] == "breathless")
+
+    res = await client.post("/api/v1/checkin", json={
+        "episode_id": str(h.episode_id), "day_after_discharge": form["effective_day"],
+        "idempotency_key": "blank-questions-1",
+        "values": [{"parameter_id": breathless["parameter_id"], "value_bool": True}],
+    })
+    assert res.json()["tier"] == "emergency"
+
+    queue = (await client.get("/api/v1/dashboard/queue", headers=headers)).json()
+    [row] = [r for r in queue["items"] if r["episode_id"] == str(h.episode_id)]
+    assert "Temperature" in row["unanswered"]
+    assert "Calf pain or swelling" in row["unanswered"]
+    assert "Breathlessness or chest pain" not in row["unanswered"]
+
+
+async def test_a_missed_alert_the_patient_answered_in_time_never_counts_against_the_ward(client, db):
+    h = await create_hospital(db, "KPI-EXPIRED")
+    headers = await login_headers(client, h.email, h.password)
+    answered_in_time = await create_alert(db, h.episode_id, tier="missed", raised_ago=timedelta(hours=3))
+    left_unanswered = await create_alert(db, h.episode_id, tier="missed", raised_ago=timedelta(hours=5))
+    # The patient checked in five minutes after the first was raised, and two hours after the second.
+    for alert_id, closed_after in ((answered_in_time, timedelta(minutes=5)), (left_unanswered, timedelta(hours=2))):
+        await db.execute(text("""
+            UPDATE txn.alert SET status = 'expired', resolved_at = raised_at + :after WHERE alert_id = :a
+        """), {"a": alert_id, "after": closed_after})
+    await db.commit()
+
+    data = (await client.get("/api/v1/dashboard/kpis", headers=headers)).json()
+    assert data["ack_decided_alerts"] == 1
+    assert data["ack_compliance_pct"] == 0.0
+

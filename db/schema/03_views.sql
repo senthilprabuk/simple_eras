@@ -38,7 +38,12 @@ select
     sp.procedure_code,
     ev.day_after_discharge,
     ev.reasons,
-    h.ack_window_secs
+    h.ack_window_secs,
+    -- the day's questions left blank, by name: blank is unknown, never "no"
+    array(select prm.parameter_name
+          from unnest(ev.unanswered) with ordinality as u(code, n)
+          join meta.parameter prm on prm.parameter_code = u.code
+          order by u.n)                                  as unanswered
 from txn.alert a
 join txn.check_in_evaluation ev  on ev.evaluation_id = a.evaluation_id
 join txn.patient_episode e       on e.episode_id     = a.episode_id

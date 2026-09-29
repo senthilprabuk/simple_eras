@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { FormParameter, FormSection, anchorFor, formatAnswer, stepFor, urgentAnswers } from "@/lib/checkinApi";
+import {
+  FormParameter,
+  FormSection,
+  anchorFor,
+  formatAnswer,
+  isRequired,
+  stepFor,
+  unansweredIn,
+  urgentAnswers,
+} from "@/lib/checkinApi";
+import { checkInText } from "@/lib/checkinText";
 
 function param(overrides: Partial<FormParameter>): FormParameter {
   return {
@@ -58,5 +68,38 @@ describe("urgentAnswers", () => {
   it("ignores no and unanswered", () => {
     expect(urgentAnswers(sections, { breathless: false })).toEqual([]);
     expect(urgentAnswers(sections, {})).toEqual([]);
+  });
+});
+
+describe("unansweredIn", () => {
+  const temp = param({ code: "temp_c", name: "Temperature" });
+  const steps = param({ code: "steps", name: "Steps walked", is_mandatory: true });
+  const calf = param({ code: "calf_pain", name: "Calf pain", type: "boolean" });
+  const section: FormSection = { key: "readings", parameters: [temp, steps, calf] };
+
+  it("requires yes/no questions and mandatory ones; a reading may be skipped", () => {
+    expect([temp, steps, calf].map(isRequired)).toEqual([false, true, true]);
+    const blank = unansweredIn(section, {});
+    expect(blank.required.map((p) => p.code)).toEqual(["steps", "calf_pain"]);
+    expect(blank.optional.map((p) => p.code)).toEqual(["temp_c"]);
+  });
+
+  it("counts a No as an answer, never a blank as one", () => {
+    const blank = unansweredIn(section, { calf_pain: false, steps: 400 });
+    expect(blank.required).toEqual([]);
+    expect(blank.optional.map((p) => p.code)).toEqual(["temp_c"]);
+  });
+});
+
+describe("check-in text", () => {
+  it("answers in the patient's language and falls back to English", () => {
+    expect(formatAnswer(param({ type: "boolean" }), true, checkInText("ta"))).toBe("ஆம்");
+    expect(formatAnswer(param({}), null, checkInText("hi"))).toBe("जवाब नहीं दिया");
+    expect(checkInText("fr").continue).toBe("Continue");
+  });
+
+  it("says one answer, not one answers", () => {
+    expect(checkInText("en").answersRecorded(1, 21)).toBe("1 answer recorded for day 21.");
+    expect(checkInText("en").answersRecorded(6, 21)).toBe("6 answers recorded for day 21.");
   });
 });

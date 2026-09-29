@@ -233,6 +233,7 @@ create table txn.check_in_evaluation (
     reason_key          text        not null,      -- hash of sorted reason names, drives dedup
     coverage            numeric(4,3),              -- fraction of expected parameters answered
     evaluated_at        timestamptz not null default now(),
+    unanswered          text[]      not null default '{}',  -- the day's questions left blank: unknown, never "no"
 
     constraint eval_tier_known
         check (tier in ('normal','review','critical','emergency','missed')),

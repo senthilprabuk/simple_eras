@@ -12,7 +12,7 @@ async def _queue_notification(db):
     alert_id = await create_alert(db, await episode_for_mrn(db, "FX-01"), tier="review")
     notification_id = (await db.execute(text("""
         INSERT INTO txn.alert_notification (alert_id, recipient, channel)
-        VALUES (:a, 'nurse.sarah@stmarys.org', 'email')
+        VALUES (:a, 'anitha.joseph@noyyalortho.in', 'email')
         RETURNING notification_id
     """), {"a": alert_id})).scalar_one()
     await db.commit()
@@ -52,4 +52,4 @@ async def test_log_provider_delivers_and_keeps_patient_details_out_of_the_log(db
     assert row["sent_at"] is not None
     assert row["attempts"] == 1
     assert str(alert_id) in caplog.text
-    assert "Lakshmi Narayanan [Smooth Recovery]" not in caplog.text
+    assert "Lakshmi Narayanan" not in caplog.text
